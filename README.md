@@ -13,7 +13,7 @@ automatically when the viewed file changes.
 - Automatic reloads on file changes and atomic saves
 - Light-theme-friendly terminal styling
 - iTerm2 inline images through tmux/SSH where supported
-- Nix flake package and development shell
+- Nix flake packages and development shells for x86_64-linux and aarch64-linux
 
 ## Usage
 
