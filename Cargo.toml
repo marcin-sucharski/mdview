@@ -1,9 +1,9 @@
 [package]
 name = "mdview"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "A minimal terminal Markdown previewer for Linux"
-repository = "https://example.invalid/mdview"
+repository = "https://github.com/marcin-sucharski/mdview"
 
 [dependencies]
 crossterm = { version = "0.29.0", default-features = false, features = ["events"] }

@@ -1,4 +1,5 @@
-use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::event::{AccessKind, AccessMode, MetadataKind, ModifyKind};
+use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
@@ -58,6 +59,10 @@ impl FileWatcher {
 }
 
 pub fn is_relevant_event(event: &Event, target: &Path) -> bool {
+    if !is_reload_event_kind(event.kind) {
+        return false;
+    }
+
     let target = absolute_path(target);
     let target_parent = target.parent().map(Path::to_path_buf);
     let target_name = target.file_name().map(|name| name.to_os_string());
@@ -73,10 +78,22 @@ pub fn is_relevant_event(event: &Event, target: &Path) -> bool {
                 return true;
             }
         }
-        target_parent
-            .as_deref()
-            .is_some_and(|parent| same_path(&path, parent))
+        false
     })
+}
+
+pub fn is_reload_event_kind(kind: EventKind) -> bool {
+    match kind {
+        EventKind::Any | EventKind::Create(_) | EventKind::Remove(_) => true,
+        EventKind::Modify(ModifyKind::Any | ModifyKind::Data(_) | ModifyKind::Name(_)) => true,
+        EventKind::Modify(ModifyKind::Metadata(MetadataKind::WriteTime) | ModifyKind::Other) => {
+            true
+        }
+        EventKind::Access(AccessKind::Close(AccessMode::Write)) => true,
+        EventKind::Access(_) | EventKind::Modify(ModifyKind::Metadata(_)) | EventKind::Other => {
+            false
+        }
+    }
 }
 
 pub fn absolute_path(path: &Path) -> PathBuf {
@@ -96,25 +113,76 @@ fn same_path(a: &Path, b: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use notify::event::{DataChange, ModifyKind};
+    use notify::event::{AccessKind, AccessMode, DataChange, MetadataKind, ModifyKind};
     use notify::{EventKind, RecursiveMode};
     use std::fs;
     use std::sync::mpsc;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn identifies_direct_and_parent_events_as_relevant() {
+    fn identifies_only_mutating_target_events_as_relevant() {
         let target = Path::new("/tmp/mdview/doc.md");
         let direct = Event::new(EventKind::Modify(ModifyKind::Data(DataChange::Content)))
             .add_path(PathBuf::from("/tmp/mdview/doc.md"));
+        let close_write = Event::new(EventKind::Access(AccessKind::Close(AccessMode::Write)))
+            .add_path(PathBuf::from("/tmp/mdview/doc.md"));
+        let read_close = Event::new(EventKind::Access(AccessKind::Close(AccessMode::Read)))
+            .add_path(PathBuf::from("/tmp/mdview/doc.md"));
+        let access_time = Event::new(EventKind::Modify(ModifyKind::Metadata(
+            MetadataKind::AccessTime,
+        )))
+        .add_path(PathBuf::from("/tmp/mdview/doc.md"));
+        let write_time = Event::new(EventKind::Modify(ModifyKind::Metadata(
+            MetadataKind::WriteTime,
+        )))
+        .add_path(PathBuf::from("/tmp/mdview/doc.md"));
         let parent =
             Event::new(EventKind::Modify(ModifyKind::Any)).add_path(PathBuf::from("/tmp/mdview"));
         let other = Event::new(EventKind::Modify(ModifyKind::Any))
             .add_path(PathBuf::from("/tmp/mdview/other.md"));
 
         assert!(is_relevant_event(&direct, target));
-        assert!(is_relevant_event(&parent, target));
+        assert!(is_relevant_event(&close_write, target));
+        assert!(is_relevant_event(&write_time, target));
+        assert!(!is_relevant_event(&read_close, target));
+        assert!(!is_relevant_event(&access_time, target));
+        assert!(!is_relevant_event(&parent, target));
         assert!(!is_relevant_event(&other, target));
+    }
+
+    #[test]
+    fn reading_watched_file_does_not_trigger_reload() {
+        let dir = std::env::temp_dir().join(format!(
+            "mdview-watch-read-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("doc.md");
+        fs::write(&target, "content").unwrap();
+        let watcher = FileWatcher::new(&target).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        let _ = watcher.poll();
+
+        let _ = fs::read_to_string(&target).unwrap();
+        let deadline = Instant::now() + Duration::from_millis(700);
+        let mut changed = false;
+        while Instant::now() < deadline {
+            if watcher.poll().changed {
+                changed = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+
+        let _ = fs::remove_file(&target);
+        let _ = fs::remove_dir(&dir);
+        assert!(
+            !changed,
+            "reading the watched file must not schedule reload"
+        );
     }
 
     #[test]

@@ -2,7 +2,7 @@
   description = "mdview - terminal Markdown previewer";
 
   inputs = {
-    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-26.05";
   };
 
   outputs = { self, nixpkgs }:
@@ -13,7 +13,7 @@
     {
       packages.${system}.default = pkgs.rustPlatform.buildRustPackage {
         pname = "mdview";
-        version = "0.1.0";
+        version = "0.1.1";
         src = pkgs.lib.cleanSourceWith {
           src = ./.;
           filter = path: type:
