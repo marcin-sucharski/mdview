@@ -113,6 +113,13 @@ tmuxc resize-window -t "$SESSION" -x 58 -y 18
 wait_for_text "Long Scrolling Example" "render after resize"
 stop_viewer
 
+start_viewer "$ROOT/examples/tables.md" 72 28
+wait_for_text "Table Rendering" "table example render"
+wait_for_text "+-" "table border render"
+wait_for_text "Unicode" "table body render"
+wait_for_text "wide characters" "table wrapped content render"
+stop_viewer
+
 WATCH_FILE="$TMPDIR/watch.md"
 printf '# Before\n\noriginal text\n' >"$WATCH_FILE"
 start_viewer "$WATCH_FILE" 90 24

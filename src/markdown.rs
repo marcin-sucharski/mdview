@@ -1,6 +1,6 @@
 use crate::image::{build_image_slot, resolve_image_path};
 use crate::rendered::{plain_line, ImageSlot, LineContent, RenderLine, Segment, Style};
-use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Parser, Tag, TagEnd};
+use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use std::borrow::Cow;
 use std::path::Path;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -28,6 +28,42 @@ struct HeadingState {
     text: String,
 }
 
+#[derive(Debug, Clone)]
+struct TableState {
+    alignments: Vec<Alignment>,
+    head_rows: Vec<TableRow>,
+    body_rows: Vec<TableRow>,
+    current_row: Option<TableRow>,
+    current_cell: Option<TableCell>,
+    pending_image: Option<PendingImage>,
+    in_head: bool,
+}
+
+impl TableState {
+    fn new(alignments: Vec<Alignment>) -> Self {
+        Self {
+            alignments,
+            head_rows: Vec::new(),
+            body_rows: Vec::new(),
+            current_row: None,
+            current_cell: None,
+            pending_image: None,
+            in_head: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct TableRow {
+    cells: Vec<TableCell>,
+    header: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+struct TableCell {
+    segments: Vec<Segment>,
+}
+
 struct Renderer<'a> {
     markdown_file: &'a Path,
     builder: LineBuilder,
@@ -38,6 +74,7 @@ struct Renderer<'a> {
     code_block: bool,
     heading: Option<HeadingState>,
     pending_image: Option<PendingImage>,
+    table: Option<TableState>,
 }
 
 pub fn render_markdown(markdown_file: &Path, source: &str, width: u16) -> Vec<RenderLine> {
@@ -59,14 +96,21 @@ impl<'a> Renderer<'a> {
             code_block: false,
             heading: None,
             pending_image: None,
+            table: None,
         }
     }
 
     fn render(mut self, source: &str) -> Vec<RenderLine> {
-        let parser = Parser::new(source);
+        let mut options = Options::empty();
+        options.insert(Options::ENABLE_TABLES);
+        let parser = Parser::new_ext(source, options);
         self.apply_prefix();
 
         for event in parser {
+            if self.handle_table_event(&event) {
+                continue;
+            }
+
             if self.handle_heading_event(&event) {
                 continue;
             }
@@ -141,6 +185,293 @@ impl<'a> Renderer<'a> {
 
         self.builder.finish_line();
         self.builder.lines
+    }
+
+    fn handle_table_event(&mut self, event: &Event<'_>) -> bool {
+        if let Event::Start(Tag::Table(alignments)) = event {
+            if self.table.is_none() {
+                self.builder.finish_line();
+                self.table = Some(TableState::new(alignments.clone()));
+                return true;
+            }
+        }
+
+        if self.table.is_none() {
+            return false;
+        }
+
+        if self.handle_table_image_event(event) {
+            return true;
+        }
+
+        match event {
+            Event::Start(tag) => self.start_table_tag(tag),
+            Event::End(end) => self.end_table_tag(*end),
+            Event::Text(text) => self.push_table_cell_text(
+                &sanitize(text),
+                self.current.style.clone(),
+                self.current.link.clone(),
+            ),
+            Event::Code(code) => {
+                let mut style = self.current.style.clone();
+                let code_style = Style::code();
+                style.fg = code_style.fg;
+                style.bg = code_style.bg;
+                self.push_table_cell_text(&sanitize(code), style, self.current.link.clone());
+            }
+            Event::Html(html) | Event::InlineHtml(html) => {
+                let mut style = self.current.style.clone();
+                style.dim = true;
+                self.push_table_cell_text(&sanitize(html), style, self.current.link.clone());
+            }
+            Event::SoftBreak | Event::HardBreak => self.push_table_cell_text(
+                " ",
+                self.current.style.clone(),
+                self.current.link.clone(),
+            ),
+            Event::Rule => self.push_table_cell_text(
+                "---",
+                self.current.style.clone(),
+                self.current.link.clone(),
+            ),
+            Event::FootnoteReference(name) => self.push_table_cell_text(
+                &format!("[{}]", sanitize(name)),
+                self.current.style.clone(),
+                self.current.link.clone(),
+            ),
+            Event::TaskListMarker(checked) => self.push_table_cell_text(
+                if *checked { "[x] " } else { "[ ] " },
+                self.current.style.clone(),
+                self.current.link.clone(),
+            ),
+            Event::InlineMath(math) | Event::DisplayMath(math) => self.push_table_cell_text(
+                &format!("${}$", sanitize(math)),
+                self.current.style.clone(),
+                self.current.link.clone(),
+            ),
+        }
+
+        true
+    }
+
+    fn handle_table_image_event(&mut self, event: &Event<'_>) -> bool {
+        if let Event::Start(Tag::Image { dest_url, .. }) = event {
+            if let Some(table) = &mut self.table {
+                table.pending_image = Some(PendingImage {
+                    dest: dest_url.to_string(),
+                    alt: String::new(),
+                });
+            }
+            return true;
+        }
+
+        let image_pending = self
+            .table
+            .as_ref()
+            .is_some_and(|table| table.pending_image.is_some());
+        if !image_pending {
+            return false;
+        }
+
+        match event {
+            Event::End(TagEnd::Image) => {
+                let Some(image) = self
+                    .table
+                    .as_mut()
+                    .and_then(|table| table.pending_image.take())
+                else {
+                    return true;
+                };
+                let alt = if image.alt.trim().is_empty() {
+                    image.dest
+                } else {
+                    image.alt.trim().to_string()
+                };
+                let mut style = Style::plain();
+                style.dim = true;
+                self.push_table_cell_text(&format!("[image: {alt}]"), style, None);
+            }
+            Event::Text(text)
+            | Event::Code(text)
+            | Event::Html(text)
+            | Event::InlineHtml(text)
+            | Event::InlineMath(text)
+            | Event::DisplayMath(text) => {
+                if let Some(image) = self
+                    .table
+                    .as_mut()
+                    .and_then(|table| table.pending_image.as_mut())
+                {
+                    image.alt.push_str(&sanitize(text));
+                }
+            }
+            Event::SoftBreak | Event::HardBreak => {
+                if let Some(image) = self
+                    .table
+                    .as_mut()
+                    .and_then(|table| table.pending_image.as_mut())
+                {
+                    image.alt.push(' ');
+                }
+            }
+            _ => {}
+        }
+
+        true
+    }
+
+    fn start_table_tag(&mut self, tag: &Tag<'_>) {
+        match tag {
+            Tag::Table(_) => {}
+            Tag::TableHead => {
+                if let Some(table) = &mut self.table {
+                    table.in_head = true;
+                }
+            }
+            Tag::TableRow => {
+                if let Some(table) = &mut self.table {
+                    table.current_row = Some(TableRow {
+                        cells: Vec::new(),
+                        header: table.in_head,
+                    });
+                }
+            }
+            Tag::TableCell => {
+                if let Some(table) = &mut self.table {
+                    if table.current_row.is_none() {
+                        table.current_row = Some(TableRow {
+                            cells: Vec::new(),
+                            header: table.in_head,
+                        });
+                    }
+                    table.current_cell = Some(TableCell::default());
+                }
+            }
+            Tag::Emphasis => self.push_style(|style| style.italic = true),
+            Tag::Strong => self.push_style(|style| style.bold = true),
+            Tag::Strikethrough => self.push_style(|style| style.dim = true),
+            Tag::Superscript | Tag::Subscript => self.push_style(|style| style.italic = true),
+            Tag::Link { dest_url, .. } => self.push_link(dest_url.to_string()),
+            Tag::HtmlBlock => self.push_style(|style| style.dim = true),
+            Tag::Paragraph
+            | Tag::Heading { .. }
+            | Tag::BlockQuote(_)
+            | Tag::CodeBlock(_)
+            | Tag::List(_)
+            | Tag::Item
+            | Tag::Image { .. }
+            | Tag::DefinitionList
+            | Tag::DefinitionListTitle
+            | Tag::DefinitionListDefinition
+            | Tag::FootnoteDefinition(_)
+            | Tag::MetadataBlock(_) => {}
+        }
+    }
+
+    fn end_table_tag(&mut self, end: TagEnd) {
+        match end {
+            TagEnd::Table => self.finish_table(),
+            TagEnd::TableHead => {
+                self.finish_current_table_row();
+                if let Some(table) = &mut self.table {
+                    table.in_head = false;
+                }
+            }
+            TagEnd::TableCell => self.finish_current_table_cell(),
+            TagEnd::TableRow => self.finish_current_table_row(),
+            TagEnd::Emphasis
+            | TagEnd::Strong
+            | TagEnd::Strikethrough
+            | TagEnd::Superscript
+            | TagEnd::Subscript
+            | TagEnd::Link => self.pop_style(),
+            TagEnd::HtmlBlock => self.pop_style(),
+            TagEnd::Paragraph
+            | TagEnd::Heading(_)
+            | TagEnd::BlockQuote(_)
+            | TagEnd::CodeBlock
+            | TagEnd::List(_)
+            | TagEnd::Item
+            | TagEnd::Image
+            | TagEnd::FootnoteDefinition
+            | TagEnd::DefinitionList
+            | TagEnd::DefinitionListTitle
+            | TagEnd::DefinitionListDefinition
+            | TagEnd::MetadataBlock(_) => {}
+        }
+    }
+
+    fn finish_current_table_cell(&mut self) {
+        let Some(table) = &mut self.table else {
+            return;
+        };
+        let Some(cell) = table.current_cell.take() else {
+            return;
+        };
+        if let Some(row) = &mut table.current_row {
+            row.cells.push(TableCell {
+                segments: trim_cell_segments(cell.segments),
+            });
+        }
+    }
+
+    fn finish_current_table_row(&mut self) {
+        self.finish_current_table_cell();
+        let Some(table) = &mut self.table else {
+            return;
+        };
+        let Some(row) = table.current_row.take() else {
+            return;
+        };
+        if row.header {
+            table.head_rows.push(row);
+        } else {
+            table.body_rows.push(row);
+        }
+    }
+
+    fn finish_table(&mut self) {
+        self.finish_current_table_row();
+        let Some(table) = self.table.take() else {
+            return;
+        };
+        let lines = render_table(&table, self.builder.width);
+        if lines.is_empty() {
+            self.apply_prefix();
+            return;
+        }
+
+        if !self.builder.lines.is_empty() {
+            self.builder.blank_line();
+        }
+        for line in lines {
+            self.builder.push_line(line);
+        }
+        self.builder.blank_line();
+        self.apply_prefix();
+    }
+
+    fn push_table_cell_text(&mut self, text: &str, style: Style, link: Option<String>) {
+        if text.is_empty() {
+            return;
+        }
+        let Some(table) = &mut self.table else {
+            return;
+        };
+        let Some(cell) = &mut table.current_cell else {
+            return;
+        };
+        if let Some(last) = cell.segments.last_mut() {
+            if last.style == style && last.link == link {
+                last.text.push_str(text);
+                return;
+            }
+        }
+        cell.segments.push(Segment {
+            text: text.to_string(),
+            style,
+            link,
+        });
     }
 
     fn handle_heading_event(&mut self, event: &Event<'_>) -> bool {
@@ -701,6 +1032,290 @@ fn is_blank(line: &RenderLine) -> bool {
     matches!(&line.content, LineContent::Text(segments) if segments.iter().all(|segment| segment.text.trim().is_empty()))
 }
 
+fn render_table(table: &TableState, max_width: usize) -> Vec<RenderLine> {
+    let columns = table_column_count(table);
+    if columns == 0 {
+        return Vec::new();
+    }
+
+    let padding = table_padding(columns, max_width);
+    let widths = table_column_widths(table, columns, max_width, padding);
+    let mut lines = Vec::new();
+
+    lines.push(table_rule(&widths, padding));
+    for row in &table.head_rows {
+        lines.extend(render_table_row(row, &table.alignments, &widths, padding));
+    }
+    if !table.head_rows.is_empty() {
+        lines.push(table_rule(&widths, padding));
+    }
+    for row in &table.body_rows {
+        lines.extend(render_table_row(row, &table.alignments, &widths, padding));
+    }
+    lines.push(table_rule(&widths, padding));
+
+    lines
+}
+
+fn table_column_count(table: &TableState) -> usize {
+    table
+        .head_rows
+        .iter()
+        .chain(table.body_rows.iter())
+        .map(|row| row.cells.len())
+        .max()
+        .unwrap_or(0)
+        .max(table.alignments.len())
+}
+
+fn table_padding(columns: usize, max_width: usize) -> usize {
+    if max_width >= columns.saturating_mul(4).saturating_add(1) {
+        1
+    } else {
+        0
+    }
+}
+
+fn table_column_widths(
+    table: &TableState,
+    columns: usize,
+    max_width: usize,
+    padding: usize,
+) -> Vec<usize> {
+    let overhead = table_overhead(columns, padding);
+    let available = max_width.saturating_sub(overhead).max(columns);
+    let base_min = if available >= columns.saturating_mul(3) {
+        3
+    } else {
+        1
+    };
+    let mut min_widths = vec![base_min; columns];
+    let mut widths = vec![base_min; columns];
+
+    for row in table.head_rows.iter().chain(table.body_rows.iter()) {
+        for (index, cell) in row.cells.iter().enumerate().take(columns) {
+            min_widths[index] = min_widths[index].max(widest_char_width(cell));
+            widths[index] = widths[index].max(cell_preferred_width(cell));
+        }
+    }
+
+    for (width, min_width) in widths.iter_mut().zip(min_widths.iter()) {
+        *width = (*width).max(*min_width);
+    }
+
+    while widths.iter().sum::<usize>() > available {
+        let Some((index, _)) = widths
+            .iter()
+            .enumerate()
+            .filter(|(index, width)| **width > min_widths[*index])
+            .max_by_key(|(_, width)| **width)
+        else {
+            break;
+        };
+        widths[index] -= 1;
+    }
+
+    widths
+}
+
+fn table_overhead(columns: usize, padding: usize) -> usize {
+    columns
+        .saturating_mul(padding.saturating_mul(2).saturating_add(1))
+        .saturating_add(1)
+}
+
+fn cell_preferred_width(cell: &TableCell) -> usize {
+    cell.segments
+        .iter()
+        .flat_map(|segment| segment.text.split_whitespace())
+        .map(UnicodeWidthStr::width)
+        .max()
+        .unwrap_or(0)
+        .max(line_width(&cell.segments))
+}
+
+fn widest_char_width(cell: &TableCell) -> usize {
+    cell.segments
+        .iter()
+        .flat_map(|segment| segment.text.chars())
+        .filter_map(UnicodeWidthChar::width)
+        .max()
+        .unwrap_or(1)
+        .max(1)
+}
+
+fn table_rule(widths: &[usize], padding: usize) -> RenderLine {
+    let mut text = String::new();
+    text.push('+');
+    for width in widths {
+        text.push_str(&"-".repeat(width.saturating_add(padding.saturating_mul(2))));
+        text.push('+');
+    }
+    RenderLine::text(vec![Segment::new(text, Style::table_border())])
+}
+
+fn render_table_row(
+    row: &TableRow,
+    alignments: &[Alignment],
+    widths: &[usize],
+    padding: usize,
+) -> Vec<RenderLine> {
+    let wrapped_cells = widths
+        .iter()
+        .enumerate()
+        .map(|(index, width)| {
+            row.cells
+                .get(index)
+                .map(|cell| wrap_cell_segments(cell, *width))
+                .unwrap_or_else(|| vec![Vec::new()])
+        })
+        .collect::<Vec<_>>();
+    let height = wrapped_cells.iter().map(Vec::len).max().unwrap_or(1).max(1);
+    let mut lines = Vec::with_capacity(height);
+
+    for line_index in 0..height {
+        let mut segments = vec![Segment::new("|", Style::table_border())];
+        for (column, width) in widths.iter().enumerate() {
+            let cell_line = wrapped_cells[column]
+                .get(line_index)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            let cell_line = styled_table_cell_segments(cell_line, row.header);
+            let content_width = line_width(&cell_line).min(*width);
+            let (left, right) =
+                alignment_padding(alignment_for(alignments, column), *width, content_width);
+            let fill_style = if row.header {
+                Style::table_header()
+            } else {
+                Style::plain()
+            };
+
+            push_fill(
+                &mut segments,
+                padding.saturating_add(left),
+                fill_style.clone(),
+            );
+            push_segments(&mut segments, cell_line);
+            push_fill(&mut segments, padding.saturating_add(right), fill_style);
+            segments.push(Segment::new("|", Style::table_border()));
+        }
+        lines.push(RenderLine::text(segments));
+    }
+
+    lines
+}
+
+fn wrap_cell_segments(cell: &TableCell, width: usize) -> Vec<Vec<Segment>> {
+    let mut builder = LineBuilder::new(width.max(1));
+    for segment in &cell.segments {
+        builder.append_wrapped(&segment.text, &segment.style, &segment.link);
+    }
+    builder.finish_line();
+
+    let mut lines = builder
+        .lines
+        .into_iter()
+        .filter_map(|line| match line.content {
+            LineContent::Text(segments) => Some(segments),
+            LineContent::Image(_) => None,
+        })
+        .collect::<Vec<_>>();
+    if lines.is_empty() {
+        lines.push(Vec::new());
+    }
+    lines
+}
+
+fn styled_table_cell_segments(segments: &[Segment], header: bool) -> Vec<Segment> {
+    if !header {
+        return segments.to_vec();
+    }
+
+    let header_style = Style::table_header();
+    segments
+        .iter()
+        .cloned()
+        .map(|mut segment| {
+            segment.style.bold = true;
+            if segment.style.fg.is_none() {
+                segment.style.fg = header_style.fg;
+            }
+            if segment.style.bg.is_none() {
+                segment.style.bg = header_style.bg;
+            }
+            segment
+        })
+        .collect()
+}
+
+fn alignment_for(alignments: &[Alignment], column: usize) -> Alignment {
+    alignments.get(column).copied().unwrap_or(Alignment::None)
+}
+
+fn alignment_padding(alignment: Alignment, width: usize, content_width: usize) -> (usize, usize) {
+    let remaining = width.saturating_sub(content_width);
+    match alignment {
+        Alignment::Right => (remaining, 0),
+        Alignment::Center => {
+            let left = remaining / 2;
+            (left, remaining - left)
+        }
+        Alignment::None | Alignment::Left => (0, remaining),
+    }
+}
+
+fn push_segments(out: &mut Vec<Segment>, segments: Vec<Segment>) {
+    for segment in segments {
+        push_segment(out, segment);
+    }
+}
+
+fn push_fill(out: &mut Vec<Segment>, width: usize, style: Style) {
+    if width > 0 {
+        push_segment(out, Segment::new(" ".repeat(width), style));
+    }
+}
+
+fn push_segment(out: &mut Vec<Segment>, segment: Segment) {
+    if segment.text.is_empty() {
+        return;
+    }
+    if let Some(last) = out.last_mut() {
+        if last.style == segment.style && last.link == segment.link {
+            last.text.push_str(&segment.text);
+            return;
+        }
+    }
+    out.push(segment);
+}
+
+fn trim_cell_segments(mut segments: Vec<Segment>) -> Vec<Segment> {
+    while segments
+        .first()
+        .is_some_and(|segment| segment.text.trim().is_empty())
+    {
+        segments.remove(0);
+    }
+    if let Some(first) = segments.first_mut() {
+        first.text = first.text.trim_start().to_string();
+    }
+
+    while segments
+        .last()
+        .is_some_and(|segment| segment.text.trim().is_empty())
+    {
+        segments.pop();
+    }
+    if let Some(last) = segments.last_mut() {
+        last.text = last.text.trim_end().to_string();
+    }
+
+    segments
+        .into_iter()
+        .filter(|segment| !segment.text.is_empty())
+        .collect()
+}
+
 fn heading_level(level: HeadingLevel) -> u8 {
     match level {
         HeadingLevel::H1 => 1,
@@ -895,6 +1510,74 @@ mod tests {
         assert_eq!(segments[0].text, "Rust");
         assert_eq!(segments[0].link.as_deref(), Some("https://rust-lang.org"));
         assert!(segments[0].style.underline);
+    }
+
+    #[test]
+    fn renders_pipe_tables_with_alignment() {
+        let lines = render(
+            "| Name | Count | Note |\n| :--- | ----: | :--: |\n| alpha | 12 | center |\n| 界 | 3 | ok |",
+            80,
+        );
+
+        assert_eq!(lines[0], "+-------+-------+--------+");
+        assert_eq!(lines[1], "| Name  | Count |  Note  |");
+        assert_eq!(lines[2], "+-------+-------+--------+");
+        assert_eq!(lines[3], "| alpha |    12 | center |");
+        assert_eq!(lines[4], "| 界    |     3 |   ok   |");
+        assert_eq!(lines[5], "+-------+-------+--------+");
+        assert_eq!(lines[6], "");
+    }
+
+    #[test]
+    fn wraps_tables_to_terminal_width() {
+        let lines = render(
+            "| Name | Description |\n| --- | --- |\n| item | alpha beta gamma delta epsilon |",
+            24,
+        );
+
+        assert!(lines.iter().any(|line| line.contains("epsilon")));
+        for line in lines.iter().filter(|line| !line.is_empty()) {
+            assert!(
+                UnicodeWidthStr::width(line.as_str()) <= 24,
+                "line exceeded width: {line:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn keeps_link_metadata_inside_table_cells() {
+        let lines = render_markdown(
+            Path::new("/tmp/doc.md"),
+            "| Site |\n| --- |\n| [Rust](https://rust-lang.org) |",
+            80,
+        );
+
+        let link = lines
+            .iter()
+            .filter_map(|line| match &line.content {
+                LineContent::Text(segments) => segments
+                    .iter()
+                    .find(|segment| segment.text.contains("Rust")),
+                LineContent::Image(_) => None,
+            })
+            .next()
+            .expect("table link segment");
+        assert_eq!(link.link.as_deref(), Some("https://rust-lang.org"));
+        assert!(link.style.underline);
+    }
+
+    #[test]
+    fn renders_table_headers_with_header_style() {
+        let lines = render_markdown(Path::new("/tmp/doc.md"), "| Head |\n| --- |\n| Body |", 80);
+        let LineContent::Text(segments) = &lines[1].content else {
+            panic!("expected header row");
+        };
+        let header = segments
+            .iter()
+            .find(|segment| segment.text.contains("Head"))
+            .expect("header segment");
+        assert!(header.style.bold);
+        assert_eq!(header.style.bg, Style::table_header().bg);
     }
 
     #[test]

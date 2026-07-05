@@ -12,6 +12,7 @@ automatically when the viewed file changes.
 - Keyboard and mouse scrolling
 - Automatic reloads on file changes and atomic saves
 - Light-theme-friendly terminal styling
+- GitHub-style pipe table rendering with alignment and wrapping
 - iTerm2 inline images through tmux/SSH where supported
 - Nix flake packages and development shells for x86_64-linux and aarch64-linux
 

@@ -18,6 +18,14 @@ Plain text can include *emphasis*, **strong text**, `inline code`, and
 2. Second ordered item
 3. Third ordered item
 
+## Table
+
+| Feature | Status | Notes |
+| :--- | :---: | ---: |
+| Scrolling | ready | keyboard and mouse |
+| File watching | ready | reloads after saves |
+| Unicode width | ready | aligns CJK text like 界 |
+
 ## Quote
 
 > Markdown preview should preserve the structure of quotes and keep them easy

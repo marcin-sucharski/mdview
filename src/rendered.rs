@@ -96,6 +96,23 @@ impl Style {
         }
     }
 
+    pub fn table_border() -> Self {
+        Self {
+            fg: Some(TermColor::Rgb(106, 115, 125)),
+            dim: true,
+            ..Self::default()
+        }
+    }
+
+    pub fn table_header() -> Self {
+        Self {
+            fg: Some(TermColor::Rgb(36, 41, 47)),
+            bg: Some(TermColor::Rgb(232, 245, 237)),
+            bold: true,
+            ..Self::default()
+        }
+    }
+
     pub fn status() -> Self {
         Self {
             fg: Some(TermColor::Rgb(36, 41, 47)),
@@ -249,6 +266,10 @@ mod tests {
         assert!(matches!(
             Style::heading_banner().bg,
             Some(TermColor::Rgb(0, 90, 138))
+        ));
+        assert!(matches!(
+            Style::table_header().bg,
+            Some(TermColor::Rgb(232, 245, 237))
         ));
         assert!(matches!(
             Style::status().bg,
