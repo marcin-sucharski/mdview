@@ -120,6 +120,18 @@ wait_for_text "Unicode" "table body render"
 wait_for_text "wide characters" "table wrapped content render"
 stop_viewer
 
+SELECT_FILE="$TMPDIR/select.md"
+printf 'alpha beta gamma\nsecond line\n' >"$SELECT_FILE"
+start_viewer "$SELECT_FILE" 80 20
+wait_for_text "alpha beta gamma" "selection test document"
+send_literal $'\033[<0;1;1M'
+send_literal $'\033[<32;6;1M'
+send_literal $'\033[<0;6;1m'
+wait_for_text "selected" "mouse drag selected text"
+send_key y
+wait_for_text "copied" "selected text copied"
+stop_viewer
+
 WATCH_FILE="$TMPDIR/watch.md"
 printf '# Before\n\noriginal text\n' >"$WATCH_FILE"
 start_viewer "$WATCH_FILE" 90 24

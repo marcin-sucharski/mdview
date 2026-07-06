@@ -10,6 +10,7 @@ automatically when the viewed file changes.
 
 - Read-only Markdown viewing with no editor mode
 - Keyboard and mouse scrolling
+- Mouse text selection with OSC 52 clipboard copy
 - Automatic reloads on file changes and atomic saves
 - Light-theme-friendly terminal styling
 - GitHub-style pipe table rendering with alignment and wrapping
@@ -28,6 +29,8 @@ Inside the viewer:
 - `k`, `Up`, or mouse wheel up scroll up
 - `PageDown` and `PageUp` scroll by a page
 - `g` and `G` jump to the top or bottom
+- drag with the left mouse button to select text
+- `y`, `c`, `Enter`, or right click copies selected text to the clipboard
 - `q`, `Esc`, or `Ctrl-C` quit
 
 ## iTerm2 Images Through tmux

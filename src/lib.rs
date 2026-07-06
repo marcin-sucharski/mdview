@@ -4,6 +4,7 @@ pub mod image;
 pub mod markdown;
 pub mod rendered;
 pub mod scroll;
+pub mod selection;
 pub mod terminal;
 pub mod watcher;
 
