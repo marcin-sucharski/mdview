@@ -11,6 +11,7 @@ automatically when the viewed file changes.
 - Read-only Markdown viewing with no editor mode
 - Keyboard and mouse scrolling
 - Mouse text selection with OSC 52 clipboard copy
+- Case-insensitive in-view search with highlighted matches
 - Automatic reloads on file changes and atomic saves
 - Light-theme-friendly terminal styling
 - GitHub-style pipe table rendering with alignment and wrapping
@@ -30,6 +31,8 @@ Inside the viewer:
 - `k`, `Up`, or mouse wheel up scroll up
 - `PageDown` and `PageUp` scroll by a page
 - `g` and `G` jump to the top or bottom
+- `/` opens search, `Enter` searches, and empty `Enter` clears search
+- `n` moves to the next search match and `p` moves to the previous one
 - drag with the left mouse button to select text
 - `y`, `c`, `Enter`, or right click copies selected text to the clipboard
 - `q`, `Esc`, or `Ctrl-C` quit

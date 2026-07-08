@@ -2,6 +2,8 @@ use crate::cli::{parse_args, CliAction, HELP};
 use crate::markdown::{render_markdown, total_rows};
 use crate::rendered::{plain_line, RenderLine};
 use crate::scroll::{clamp_offset, page_step, scroll_by};
+use crate::search::{find_matches, first_at_or_after, next_index, previous_index};
+use crate::selection::SelectionRange;
 use crate::selection::{selected_text, SelectionPoint, SelectionState};
 use crate::terminal::Terminal;
 use crate::watcher::{absolute_path, FileWatcher};
@@ -77,6 +79,7 @@ fn run_file(path: PathBuf) -> Result<(), AppError> {
         state.scroll,
         &state.status(viewport_rows as usize, None),
         state.selection_range(),
+        state.search_highlights(),
     )?;
 
     let mut reload_due: Option<Instant> = None;
@@ -85,40 +88,62 @@ fn run_file(path: PathBuf) -> Result<(), AppError> {
     loop {
         if event::poll(POLL_TICK)? {
             match event::read()? {
-                TermEvent::Key(key) => match input_action(key) {
-                    InputAction::Quit => break,
-                    InputAction::Scroll(delta) => {
-                        state.scroll_by(delta, viewport_rows as usize);
-                        draw_needed = true;
+                TermEvent::Key(key) => {
+                    if state.search_input_active() {
+                        match state.handle_search_input(key, viewport_rows as usize) {
+                            SearchKeyResult::Quit => break,
+                            SearchKeyResult::Redraw => draw_needed = true,
+                            SearchKeyResult::None => {}
+                        }
+                    } else {
+                        match input_action(key) {
+                            InputAction::Quit => break,
+                            InputAction::Scroll(delta) => {
+                                state.scroll_by(delta, viewport_rows as usize);
+                                draw_needed = true;
+                            }
+                            InputAction::PageUp => {
+                                state.scroll_by(
+                                    -(page_step(viewport_rows as usize) as isize),
+                                    viewport_rows as usize,
+                                );
+                                draw_needed = true;
+                            }
+                            InputAction::PageDown => {
+                                state.scroll_by(
+                                    page_step(viewport_rows as usize) as isize,
+                                    viewport_rows as usize,
+                                );
+                                draw_needed = true;
+                            }
+                            InputAction::Top => {
+                                state.scroll = 0;
+                                draw_needed = true;
+                            }
+                            InputAction::Bottom => {
+                                state.scroll = state.max_scroll(viewport_rows as usize);
+                                draw_needed = true;
+                            }
+                            InputAction::Copy => {
+                                state.copy_selection(&mut terminal, viewport_cols as usize)?;
+                                draw_needed = true;
+                            }
+                            InputAction::Search => {
+                                state.begin_search_input();
+                                draw_needed = true;
+                            }
+                            InputAction::NextSearch => {
+                                state.next_search_match(viewport_rows as usize);
+                                draw_needed = true;
+                            }
+                            InputAction::PreviousSearch => {
+                                state.previous_search_match(viewport_rows as usize);
+                                draw_needed = true;
+                            }
+                            InputAction::None => {}
+                        }
                     }
-                    InputAction::PageUp => {
-                        state.scroll_by(
-                            -(page_step(viewport_rows as usize) as isize),
-                            viewport_rows as usize,
-                        );
-                        draw_needed = true;
-                    }
-                    InputAction::PageDown => {
-                        state.scroll_by(
-                            page_step(viewport_rows as usize) as isize,
-                            viewport_rows as usize,
-                        );
-                        draw_needed = true;
-                    }
-                    InputAction::Top => {
-                        state.scroll = 0;
-                        draw_needed = true;
-                    }
-                    InputAction::Bottom => {
-                        state.scroll = state.max_scroll(viewport_rows as usize);
-                        draw_needed = true;
-                    }
-                    InputAction::Copy => {
-                        state.copy_selection(&mut terminal, viewport_cols as usize)?;
-                        draw_needed = true;
-                    }
-                    InputAction::None => {}
-                },
+                }
                 TermEvent::Mouse(mouse) => match mouse.kind {
                     MouseEventKind::ScrollUp => {
                         state.scroll_by(-WHEEL_LINES, viewport_rows as usize);
@@ -207,6 +232,7 @@ fn run_file(path: PathBuf) -> Result<(), AppError> {
                 state.scroll,
                 &state.status(viewport_rows as usize, reload_state),
                 state.selection_range(),
+                state.search_highlights(),
             )?;
             draw_needed = false;
         }
@@ -223,6 +249,22 @@ struct ViewerState {
     scroll: usize,
     last_status: Option<String>,
     selection: SelectionState,
+    search: SearchState,
+}
+
+#[derive(Debug, Clone, Default)]
+struct SearchState {
+    input: Option<String>,
+    query: String,
+    matches: Vec<SelectionRange>,
+    current: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SearchKeyResult {
+    Quit,
+    Redraw,
+    None,
 }
 
 impl ViewerState {
@@ -236,6 +278,7 @@ impl ViewerState {
             scroll: 0,
             last_status: Some("loaded".to_string()),
             selection: SelectionState::default(),
+            search: SearchState::default(),
         })
     }
 
@@ -264,6 +307,7 @@ impl ViewerState {
             self.lines = vec![plain_line("(empty)")];
         }
         self.selection.clear();
+        self.refresh_search_matches();
     }
 
     fn scroll_by(&mut self, delta: isize, viewport_rows: usize) {
@@ -275,6 +319,10 @@ impl ViewerState {
     }
 
     fn status(&self, viewport_rows: usize, reload_state: Option<&str>) -> String {
+        if let Some(input) = &self.search.input {
+            return format!("/{input}");
+        }
+
         let total = total_rows(&self.lines);
         let percent = if total <= viewport_rows {
             100
@@ -296,6 +344,10 @@ impl ViewerState {
 
     fn selection_range(&self) -> Option<crate::selection::SelectionRange> {
         self.selection.range()
+    }
+
+    fn search_highlights(&self) -> &[SelectionRange] {
+        &self.search.matches
     }
 
     fn selection_text(&self, max_width: usize) -> Option<String> {
@@ -329,6 +381,119 @@ impl ViewerState {
             mouse.column as usize,
         ))
     }
+
+    fn search_input_active(&self) -> bool {
+        self.search.input.is_some()
+    }
+
+    fn begin_search_input(&mut self) {
+        self.search.input = Some(String::new());
+    }
+
+    fn handle_search_input(&mut self, key: KeyEvent, viewport_rows: usize) -> SearchKeyResult {
+        match (key.code, key.modifiers) {
+            (KeyCode::Char('c'), KeyModifiers::CONTROL) => SearchKeyResult::Quit,
+            (KeyCode::Esc, _) => {
+                self.search.input = None;
+                self.last_status = Some("search canceled".to_string());
+                SearchKeyResult::Redraw
+            }
+            (KeyCode::Enter, _) => {
+                let input = self.search.input.take().unwrap_or_default();
+                if input.is_empty() {
+                    self.clear_search();
+                } else {
+                    self.commit_search(input, viewport_rows);
+                }
+                SearchKeyResult::Redraw
+            }
+            (KeyCode::Backspace, _) => {
+                if let Some(input) = &mut self.search.input {
+                    input.pop();
+                }
+                SearchKeyResult::Redraw
+            }
+            (KeyCode::Char(ch), KeyModifiers::NONE) | (KeyCode::Char(ch), KeyModifiers::SHIFT) => {
+                if let Some(input) = &mut self.search.input {
+                    input.push(ch);
+                }
+                SearchKeyResult::Redraw
+            }
+            _ => SearchKeyResult::None,
+        }
+    }
+
+    fn clear_search(&mut self) {
+        self.search.query.clear();
+        self.search.matches.clear();
+        self.search.current = None;
+        self.search.input = None;
+        self.last_status = Some("search cleared".to_string());
+    }
+
+    fn commit_search(&mut self, query: String, viewport_rows: usize) {
+        self.search.query = query;
+        self.search.matches = find_matches(&self.lines, &self.search.query);
+        self.search.current = first_at_or_after(&self.search.matches, self.scroll);
+        self.scroll_to_current_search_match(viewport_rows);
+        self.last_status = Some(self.search_status());
+    }
+
+    fn refresh_search_matches(&mut self) {
+        if self.search.query.is_empty() {
+            self.search.matches.clear();
+            self.search.current = None;
+            return;
+        }
+
+        let row = self
+            .search
+            .current
+            .and_then(|index| self.search.matches.get(index))
+            .map(|range| range.start.row)
+            .unwrap_or(self.scroll);
+        self.search.matches = find_matches(&self.lines, &self.search.query);
+        self.search.current = first_at_or_after(&self.search.matches, row);
+    }
+
+    fn next_search_match(&mut self, viewport_rows: usize) {
+        if self.search.query.is_empty() {
+            self.last_status = Some("no active search".to_string());
+            return;
+        }
+        self.search.current = next_index(&self.search.matches, self.search.current);
+        self.scroll_to_current_search_match(viewport_rows);
+        self.last_status = Some(self.search_status());
+    }
+
+    fn previous_search_match(&mut self, viewport_rows: usize) {
+        if self.search.query.is_empty() {
+            self.last_status = Some("no active search".to_string());
+            return;
+        }
+        self.search.current = previous_index(&self.search.matches, self.search.current);
+        self.scroll_to_current_search_match(viewport_rows);
+        self.last_status = Some(self.search_status());
+    }
+
+    fn scroll_to_current_search_match(&mut self, viewport_rows: usize) {
+        if let Some(range) = self
+            .search
+            .current
+            .and_then(|index| self.search.matches.get(index))
+        {
+            self.scroll = clamp_offset(range.start.row, total_rows(&self.lines), viewport_rows);
+        }
+    }
+
+    fn search_status(&self) -> String {
+        let total = self.search.matches.len();
+        if total == 0 {
+            return format!("no matches: {}", self.search.query);
+        }
+        let current = self.search.current.unwrap_or(0).saturating_add(1);
+        format!("match {current}/{total}: {}", self.search.query)
+    }
 }
 
 fn load_source(path: &Path) -> io::Result<String> {
@@ -344,6 +509,9 @@ pub enum InputAction {
     Top,
     Bottom,
     Copy,
+    Search,
+    NextSearch,
+    PreviousSearch,
     None,
 }
 
@@ -359,6 +527,13 @@ pub fn input_action(key: KeyEvent) -> InputAction {
         (KeyCode::PageUp, _) => InputAction::PageUp,
         (KeyCode::Home, _) | (KeyCode::Char('g'), KeyModifiers::NONE) => InputAction::Top,
         (KeyCode::End, _) | (KeyCode::Char('G'), KeyModifiers::SHIFT) => InputAction::Bottom,
+        (KeyCode::Char('/'), KeyModifiers::NONE) => InputAction::Search,
+        (KeyCode::Char('n'), KeyModifiers::NONE) | (KeyCode::Char('N'), KeyModifiers::SHIFT) => {
+            InputAction::NextSearch
+        }
+        (KeyCode::Char('p'), KeyModifiers::NONE) | (KeyCode::Char('P'), KeyModifiers::SHIFT) => {
+            InputAction::PreviousSearch
+        }
         (KeyCode::Char('y'), KeyModifiers::NONE)
         | (KeyCode::Char('c'), KeyModifiers::NONE)
         | (KeyCode::Enter, _) => InputAction::Copy,
@@ -399,6 +574,18 @@ mod tests {
             input_action(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE)),
             InputAction::Copy
         );
+        assert_eq!(
+            input_action(KeyEvent::new(KeyCode::Char('/'), KeyModifiers::NONE)),
+            InputAction::Search
+        );
+        assert_eq!(
+            input_action(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE)),
+            InputAction::NextSearch
+        );
+        assert_eq!(
+            input_action(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE)),
+            InputAction::PreviousSearch
+        );
     }
 
     #[test]
@@ -422,5 +609,78 @@ mod tests {
 
         let _ = fs::remove_file(path);
         let _ = fs::remove_dir(dir);
+    }
+
+    #[test]
+    fn search_starts_from_viewport_top() {
+        let mut state = state_with_lines(&[
+            "needle before viewport",
+            "filler",
+            "Needle in viewport",
+            "needle after viewport",
+        ]);
+        state.scroll = 2;
+
+        state.commit_search("needle".to_string(), 2);
+
+        assert_eq!(state.search.matches.len(), 3);
+        assert_eq!(state.search.current, Some(1));
+        assert_eq!(state.scroll, 2);
+        assert!(state.last_status.as_deref().unwrap().contains("match 2/3"));
+    }
+
+    #[test]
+    fn search_next_and_previous_navigate_matches() {
+        let mut state = state_with_lines(&["needle one", "needle two", "needle three"]);
+        state.commit_search("needle".to_string(), 2);
+
+        assert_eq!(state.search.current, Some(0));
+        state.next_search_match(2);
+        assert_eq!(state.search.current, Some(1));
+        assert_eq!(state.scroll, 1);
+        state.next_search_match(2);
+        assert_eq!(state.search.current, Some(2));
+        state.previous_search_match(2);
+        assert_eq!(state.search.current, Some(1));
+    }
+
+    #[test]
+    fn empty_search_clears_highlights_and_preserves_scroll() {
+        let mut state = state_with_lines(&["needle one", "filler", "needle two", "tail"]);
+        state.commit_search("needle".to_string(), 2);
+        state.scroll = 2;
+        state.begin_search_input();
+
+        assert_eq!(
+            state.handle_search_input(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE), 2),
+            SearchKeyResult::Redraw
+        );
+
+        assert_eq!(state.scroll, 2);
+        assert!(state.search.query.is_empty());
+        assert!(state.search.matches.is_empty());
+        assert_eq!(state.last_status.as_deref(), Some("search cleared"));
+    }
+
+    #[test]
+    fn search_input_status_shows_prompt() {
+        let mut state = state_with_lines(&["alpha"]);
+        state.begin_search_input();
+        let _ =
+            state.handle_search_input(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE), 10);
+
+        assert_eq!(state.status(10, None), "/a");
+    }
+
+    fn state_with_lines(lines: &[&str]) -> ViewerState {
+        ViewerState {
+            path: PathBuf::from("/tmp/doc.md"),
+            source: lines.join("\n"),
+            lines: lines.iter().map(|line| plain_line(*line)).collect(),
+            scroll: 0,
+            last_status: Some("loaded".to_string()),
+            selection: SelectionState::default(),
+            search: SearchState::default(),
+        }
     }
 }

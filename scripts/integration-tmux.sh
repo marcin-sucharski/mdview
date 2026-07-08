@@ -139,6 +139,40 @@ send_key y
 wait_for_text "copied" "selected text copied"
 stop_viewer
 
+SEARCH_FILE="$TMPDIR/search.md"
+{
+  printf '# Search Demo\n\n```text\n'
+  for i in $(seq 1 70); do
+    case "$i" in
+      2) printf 'needle early\n' ;;
+      32) printf 'Search anchor\n' ;;
+      34) printf 'needle target\n' ;;
+      44) printf 'needle late\n' ;;
+      *) printf 'ordinary line %02d\n' "$i" ;;
+    esac
+  done
+  printf '```\n'
+} >"$SEARCH_FILE"
+start_viewer "$SEARCH_FILE" 90 18
+wait_for_text "Search Demo" "search test document"
+send_key NPage
+send_key NPage
+wait_for_text "Search anchor" "large document scrolled near search target"
+send_key /
+send_literal "needle"
+send_key Enter
+wait_for_text "needle target" "search starts at viewport top"
+wait_until_gone "needle early" "search did not jump to earlier match"
+send_key n
+wait_for_text "needle late" "n moved to next search match"
+send_key p
+wait_for_text "needle target" "p moved to previous search match"
+send_key /
+send_key Enter
+wait_for_text "search cleared" "empty search cleared highlights"
+wait_for_text "needle target" "empty search preserved scroll position"
+stop_viewer
+
 WATCH_FILE="$TMPDIR/watch.md"
 printf '# Before\n\noriginal text\n' >"$WATCH_FILE"
 start_viewer "$WATCH_FILE" 90 24

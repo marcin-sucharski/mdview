@@ -173,6 +173,15 @@ impl Style {
         }
     }
 
+    pub fn search_highlight() -> Self {
+        Self {
+            fg: Some(TermColor::Rgb(36, 41, 47)),
+            bg: Some(TermColor::Rgb(255, 235, 132)),
+            bold: true,
+            ..Self::default()
+        }
+    }
+
     pub fn status() -> Self {
         Self {
             fg: Some(TermColor::Rgb(36, 41, 47)),
@@ -334,6 +343,10 @@ mod tests {
         assert!(matches!(
             Style::table_header().bg,
             Some(TermColor::Rgb(232, 245, 237))
+        ));
+        assert!(matches!(
+            Style::search_highlight().bg,
+            Some(TermColor::Rgb(255, 235, 132))
         ));
         assert!(matches!(
             Style::status().bg,

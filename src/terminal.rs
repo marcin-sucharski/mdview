@@ -49,13 +49,21 @@ impl Terminal {
         scroll_offset: usize,
         status: &str,
         selection: Option<SelectionRange>,
+        search_highlights: &[SelectionRange],
     ) -> io::Result<()> {
         let (cols, rows) = terminal::size()?;
         let cols = cols.max(1);
         let viewport_rows = rows.saturating_sub(1);
 
         queue!(self.stdout, MoveTo(0, 0), Clear(ClearType::All))?;
-        self.draw_body(lines, scroll_offset, cols, viewport_rows, selection)?;
+        self.draw_body(
+            lines,
+            scroll_offset,
+            cols,
+            viewport_rows,
+            selection,
+            search_highlights,
+        )?;
         self.draw_status(status, cols, rows.saturating_sub(1))?;
         self.stdout.flush()
     }
@@ -73,6 +81,7 @@ impl Terminal {
         cols: u16,
         viewport_rows: u16,
         selection: Option<SelectionRange>,
+        search_highlights: &[SelectionRange],
     ) -> io::Result<()> {
         let mut skip = scroll_offset;
         let mut y = 0u16;
@@ -100,14 +109,19 @@ impl Terminal {
             match &line.content {
                 LineContent::Text(segments) => {
                     queue!(self.stdout, MoveTo(0, y))?;
-                    let selected_cols = selection.and_then(|range| {
-                        range.columns_for_row(scroll_offset + y as usize, cols as usize)
-                    });
-                    write_segments_with_selection(
+                    let absolute_row = scroll_offset + y as usize;
+                    let selected_cols = selection
+                        .and_then(|range| range.columns_for_row(absolute_row, cols as usize));
+                    let search_cols = search_highlights
+                        .iter()
+                        .filter_map(|range| range.columns_for_row(absolute_row, cols as usize))
+                        .collect::<Vec<_>>();
+                    write_segments_with_highlights(
                         &mut self.stdout,
                         segments,
                         cols as usize,
                         selected_cols,
+                        &search_cols,
                     )?;
                     y += 1;
                 }
@@ -233,14 +247,15 @@ pub fn write_segments(
     segments: &[Segment],
     max_width: usize,
 ) -> io::Result<()> {
-    write_segments_with_selection(out, segments, max_width, None)
+    write_segments_with_highlights(out, segments, max_width, None, &[])
 }
 
-fn write_segments_with_selection(
+fn write_segments_with_highlights(
     out: &mut impl Write,
     segments: &[Segment],
     max_width: usize,
     selection: Option<(usize, usize)>,
+    search_highlights: &[(usize, usize)],
 ) -> io::Result<()> {
     let mut col = 0usize;
     let mut pending: Option<Segment> = None;
@@ -266,6 +281,12 @@ fn write_segments_with_selection(
                 }
             });
             let mut style = segment.style.clone();
+            if column_in_ranges(col, char_width, search_highlights) {
+                let highlight = Style::search_highlight();
+                style.fg = highlight.fg;
+                style.bg = highlight.bg;
+                style.bold = true;
+            }
             if selected {
                 style.reverse = true;
             }
@@ -288,6 +309,16 @@ fn write_segments_with_selection(
 
     flush_pending_segment(out, &mut pending)?;
     write!(out, "\x1b[0m")
+}
+
+fn column_in_ranges(col: usize, width: usize, ranges: &[(usize, usize)]) -> bool {
+    ranges.iter().any(|(start, end)| {
+        if width == 0 {
+            *start <= col && col < *end
+        } else {
+            col < *end && col + width > *start
+        }
+    })
 }
 
 fn queue_output_segment(
@@ -438,17 +469,33 @@ mod tests {
     #[test]
     fn writes_selected_text_with_reverse_video() {
         let mut out = Vec::new();
-        write_segments_with_selection(
+        write_segments_with_highlights(
             &mut out,
             &[Segment::new("abcdef", Style::plain())],
             80,
             Some((1, 4)),
+            &[],
         )
         .unwrap();
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("\x1b[0ma\x1b[0m"));
         assert!(text.contains("\x1b[0;7mbcd\x1b[0m"));
         assert!(text.contains("\x1b[0mef\x1b[0m"));
+    }
+
+    #[test]
+    fn writes_search_highlights_with_background() {
+        let mut out = Vec::new();
+        write_segments_with_highlights(
+            &mut out,
+            &[Segment::new("abcdef", Style::plain())],
+            80,
+            None,
+            &[(2, 5)],
+        )
+        .unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.contains("\x1b[0;1;38;2;36;41;47;48;2;255;235;132mcde\x1b[0m"));
     }
 
     #[test]
