@@ -5,6 +5,7 @@ pub mod markdown;
 pub mod rendered;
 pub mod scroll;
 pub mod selection;
+pub mod syntax;
 pub mod terminal;
 pub mod watcher;
 

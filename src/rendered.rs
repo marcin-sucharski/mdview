@@ -80,6 +80,66 @@ impl Style {
         }
     }
 
+    pub fn code_keyword() -> Self {
+        Self {
+            fg: Some(TermColor::Rgb(91, 75, 138)),
+            bg: Some(TermColor::Rgb(246, 248, 250)),
+            bold: true,
+            ..Self::default()
+        }
+    }
+
+    pub fn code_key() -> Self {
+        Self {
+            fg: Some(TermColor::Rgb(5, 112, 133)),
+            bg: Some(TermColor::Rgb(246, 248, 250)),
+            bold: true,
+            ..Self::default()
+        }
+    }
+
+    pub fn code_string() -> Self {
+        Self {
+            fg: Some(TermColor::Rgb(17, 99, 41)),
+            bg: Some(TermColor::Rgb(246, 248, 250)),
+            ..Self::default()
+        }
+    }
+
+    pub fn code_number() -> Self {
+        Self {
+            fg: Some(TermColor::Rgb(9, 105, 218)),
+            bg: Some(TermColor::Rgb(246, 248, 250)),
+            ..Self::default()
+        }
+    }
+
+    pub fn code_literal() -> Self {
+        Self {
+            fg: Some(TermColor::Rgb(149, 56, 0)),
+            bg: Some(TermColor::Rgb(246, 248, 250)),
+            bold: true,
+            ..Self::default()
+        }
+    }
+
+    pub fn code_punctuation() -> Self {
+        Self {
+            fg: Some(TermColor::Rgb(87, 96, 106)),
+            bg: Some(TermColor::Rgb(246, 248, 250)),
+            ..Self::default()
+        }
+    }
+
+    pub fn code_comment() -> Self {
+        Self {
+            fg: Some(TermColor::Rgb(106, 115, 125)),
+            bg: Some(TermColor::Rgb(246, 248, 250)),
+            dim: true,
+            ..Self::default()
+        }
+    }
+
     pub fn quote() -> Self {
         Self {
             fg: Some(TermColor::Rgb(88, 96, 105)),
@@ -262,6 +322,10 @@ mod tests {
         assert!(matches!(
             Style::code().bg,
             Some(TermColor::Rgb(246, 248, 250))
+        ));
+        assert!(matches!(
+            Style::code_string().fg,
+            Some(TermColor::Rgb(17, 99, 41))
         ));
         assert!(matches!(
             Style::heading_banner().bg,

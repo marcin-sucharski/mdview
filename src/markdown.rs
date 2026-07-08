@@ -1,5 +1,6 @@
 use crate::image::{build_image_slot, resolve_image_path};
 use crate::rendered::{plain_line, ImageSlot, LineContent, RenderLine, Segment, Style};
+use crate::syntax::highlight_code;
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use std::borrow::Cow;
 use std::path::Path;
@@ -26,6 +27,12 @@ struct PendingImage {
 struct HeadingState {
     level: u8,
     text: String,
+}
+
+#[derive(Debug, Clone, Default)]
+struct CodeBlockState {
+    language: String,
+    source: String,
 }
 
 #[derive(Debug, Clone)]
@@ -71,7 +78,7 @@ struct Renderer<'a> {
     stack: Vec<InlineState>,
     quote_depth: usize,
     lists: Vec<ListState>,
-    code_block: bool,
+    code_block: Option<CodeBlockState>,
     heading: Option<HeadingState>,
     pending_image: Option<PendingImage>,
     table: Option<TableState>,
@@ -93,7 +100,7 @@ impl<'a> Renderer<'a> {
             stack: Vec::new(),
             quote_depth: 0,
             lists: Vec::new(),
-            code_block: false,
+            code_block: None,
             heading: None,
             pending_image: None,
             table: None,
@@ -123,9 +130,8 @@ impl<'a> Renderer<'a> {
                 Event::Start(tag) => self.start_tag(tag),
                 Event::End(end) => self.end_tag(end),
                 Event::Text(text) => {
-                    if self.code_block {
-                        self.builder
-                            .append_preserved(&sanitize(&text), Style::code());
+                    if let Some(code_block) = &mut self.code_block {
+                        code_block.source.push_str(&sanitize(&text));
                     } else {
                         self.builder.append_wrapped(
                             &sanitize(&text),
@@ -149,10 +155,20 @@ impl<'a> Renderer<'a> {
                         .append_wrapped(&sanitize(&html), &style, &self.current.link);
                 }
                 Event::SoftBreak => {
-                    self.builder
-                        .append_wrapped(" ", &self.current.style, &self.current.link)
+                    if let Some(code_block) = &mut self.code_block {
+                        code_block.source.push('\n');
+                    } else {
+                        self.builder
+                            .append_wrapped(" ", &self.current.style, &self.current.link)
+                    }
                 }
-                Event::HardBreak => self.builder.finish_line(),
+                Event::HardBreak => {
+                    if let Some(code_block) = &mut self.code_block {
+                        code_block.source.push('\n');
+                    } else {
+                        self.builder.finish_line();
+                    }
+                }
                 Event::Rule => {
                     self.builder.finish_line();
                     let mut style = Style::plain();
@@ -662,15 +678,17 @@ impl<'a> Renderer<'a> {
             }
             Tag::CodeBlock(kind) => {
                 self.builder.finish_line();
-                self.code_block = true;
+                let language = code_block_language(kind);
+                self.code_block = Some(CodeBlockState {
+                    language: language.clone(),
+                    source: String::new(),
+                });
                 self.apply_code_prefix();
-                if let CodeBlockKind::Fenced(lang) = kind {
-                    if !lang.trim().is_empty() {
-                        let mut style = Style::code();
-                        style.dim = true;
-                        self.builder
-                            .append_preserved(&format!("// {}", sanitize(&lang)), style);
-                    }
+                if !language.is_empty() {
+                    let mut style = Style::code();
+                    style.dim = true;
+                    self.builder
+                        .append_preserved_line(&[Segment::new(format!("// {language}"), style)]);
                 }
             }
             Tag::List(start) => {
@@ -717,8 +735,9 @@ impl<'a> Renderer<'a> {
                 self.builder.blank_line();
             }
             TagEnd::CodeBlock => {
-                self.builder.finish_line();
-                self.code_block = false;
+                if let Some(code_block) = self.code_block.take() {
+                    self.finish_code_block(code_block);
+                }
                 self.apply_prefix();
                 self.builder.blank_line();
             }
@@ -779,6 +798,12 @@ impl<'a> Renderer<'a> {
             prefix_style,
         )];
         self.builder.set_prefix(Some(first), rest);
+    }
+
+    fn finish_code_block(&mut self, code_block: CodeBlockState) {
+        for segments in highlight_code(&code_block.language, &code_block.source) {
+            self.builder.append_preserved_line(&segments);
+        }
     }
 
     fn apply_prefix(&mut self) {
@@ -870,21 +895,23 @@ impl LineBuilder {
         }
     }
 
-    fn append_preserved(&mut self, text: &str, style: Style) {
-        for ch in text.chars() {
-            if ch == '\n' {
-                self.finish_line();
-                continue;
+    fn append_preserved_line(&mut self, segments: &[Segment]) {
+        self.ensure_line();
+        for segment in segments {
+            for ch in segment.text.chars() {
+                let width = UnicodeWidthChar::width(ch).unwrap_or(0);
+                if width > 0
+                    && self.col + width > self.width
+                    && self.col > self.current_prefix_width
+                {
+                    self.finish_line();
+                    self.ensure_line();
+                }
+                self.push_text(&ch.to_string(), segment.style.clone(), segment.link.clone());
+                self.col += width;
             }
-            self.ensure_line();
-            let width = UnicodeWidthChar::width(ch).unwrap_or(0);
-            if width > 0 && self.col + width > self.width && self.col > self.current_prefix_width {
-                self.finish_line();
-                self.ensure_line();
-            }
-            self.push_text(&ch.to_string(), style.clone(), None);
-            self.col += width;
         }
+        self.finish_line();
     }
 
     fn append_space(&mut self, style: &Style, link: &Option<String>) {
@@ -1316,6 +1343,18 @@ fn trim_cell_segments(mut segments: Vec<Segment>) -> Vec<Segment> {
         .collect()
 }
 
+fn code_block_language(kind: CodeBlockKind<'_>) -> String {
+    match kind {
+        CodeBlockKind::Fenced(info) => info
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
+        CodeBlockKind::Indented => String::new(),
+    }
+}
+
 fn heading_level(level: HeadingLevel) -> u8 {
     match level {
         HeadingLevel::H1 => 1,
@@ -1495,6 +1534,55 @@ mod tests {
         let lines = render("```rust\nfn main() {}\n```", 80);
         assert!(lines.iter().any(|line| line.contains("// rust")));
         assert!(lines.iter().any(|line| line.contains("fn main() {}")));
+    }
+
+    #[test]
+    fn highlights_json_code_blocks() {
+        let lines = render_markdown(Path::new("/tmp/doc.md"), "```json\n{\"ok\": true}\n```", 80);
+        let json_key = find_segment(&lines, r#""ok""#);
+        assert_eq!(json_key.style, Style::code_key());
+
+        let literal = find_segment(&lines, "true");
+        assert_eq!(literal.style, Style::code_literal());
+    }
+
+    #[test]
+    fn highlights_http_code_blocks_with_json_bodies() {
+        let source = "```http\nPOST /items HTTP/1.1\nContent-Type: application/json\n\n{\"ok\": true}\n>>>\nHTTP 200 OK\nContent-Type: application/json\n\n{\"id\": 2}\n```";
+        let lines = render_markdown(Path::new("/tmp/doc.md"), source, 100);
+
+        assert_eq!(find_segment(&lines, "POST").style, Style::code_keyword());
+        assert_eq!(
+            find_segment(&lines, "Content-Type").style,
+            Style::code_key()
+        );
+        assert_eq!(find_segment(&lines, r#""ok""#).style, Style::code_key());
+        assert_eq!(find_segment(&lines, "HTTP").style, Style::code_keyword());
+        assert_eq!(find_segment(&lines, "200").style, Style::code_number());
+        assert_eq!(find_segment(&lines, r#""id""#).style, Style::code_key());
+    }
+
+    #[test]
+    fn highlights_xml_code_blocks() {
+        let lines = render_markdown(
+            Path::new("/tmp/doc.md"),
+            "```xml\n<item id=\"1\">text</item>\n```",
+            80,
+        );
+        assert_eq!(find_segment(&lines, "item").style, Style::code_keyword());
+        assert_eq!(find_segment(&lines, "id").style, Style::code_key());
+        assert_eq!(find_segment(&lines, "\"1\"").style, Style::code_string());
+    }
+
+    fn find_segment<'a>(lines: &'a [RenderLine], text: &str) -> &'a Segment {
+        lines
+            .iter()
+            .filter_map(|line| match &line.content {
+                LineContent::Text(segments) => segments.iter().find(|segment| segment.text == text),
+                LineContent::Image(_) => None,
+            })
+            .next()
+            .unwrap_or_else(|| panic!("missing segment {text:?}"))
     }
 
     #[test]
