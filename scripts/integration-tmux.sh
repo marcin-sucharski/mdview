@@ -38,7 +38,8 @@ fail_with_capture() {
 wait_for_text() {
   local needle="$1"
   local label="${2:-$needle}"
-  for _ in $(seq 1 80); do
+  local attempts="${3:-80}"
+  for _ in $(seq 1 "$attempts"); do
     if capture | grep -Fq "$needle"; then
       return 0
     fi
@@ -183,6 +184,10 @@ TMP_WRITE="$TMPDIR/.watch.md.tmp"
 printf '# After atomic rename\n\nrenamed text\n' >"$TMP_WRITE"
 mv "$TMP_WRITE" "$WATCH_FILE"
 wait_for_text "After atomic rename" "reload after atomic rename"
+rm "$WATCH_FILE"
+sleep 0.5
+printf '# After delete recreate\n\nrecreated text\n' >"$WATCH_FILE"
+wait_for_text "After delete recreate" "reload after delete and recreate" 150
 stop_viewer
 
 start_viewer "$ROOT/examples/images.md" 180 48 "TERM_PROGRAM=tmux"

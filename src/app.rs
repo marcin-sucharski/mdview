@@ -72,7 +72,7 @@ fn run_file(path: PathBuf) -> Result<(), AppError> {
     let mut terminal = Terminal::enter()?;
     let (mut viewport_cols, mut viewport_rows) = terminal.viewport_size()?;
     let mut state = ViewerState::load(path, viewport_cols)?;
-    let watcher = FileWatcher::new(&state.path)?;
+    let mut watcher = FileWatcher::new(&state.path)?;
 
     terminal.draw(
         &state.lines,

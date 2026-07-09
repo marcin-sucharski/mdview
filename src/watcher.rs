@@ -1,18 +1,34 @@
 use notify::event::{AccessKind, AccessMode, MetadataKind, ModifyKind};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use std::fs;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::time::{Duration, Instant, SystemTime};
+
+const METADATA_POLL_INTERVAL: Duration = Duration::from_secs(10);
 
 pub struct FileWatcher {
     _watcher: RecommendedWatcher,
     rx: Receiver<notify::Result<Event>>,
     path: PathBuf,
+    signature: FileSignature,
+    next_metadata_poll: Instant,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct WatchPoll {
     pub changed: bool,
     pub errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FileSignature {
+    exists: bool,
+    dev: Option<u64>,
+    ino: Option<u64>,
+    len: Option<u64>,
+    modified: Option<SystemTime>,
 }
 
 impl FileWatcher {
@@ -33,11 +49,13 @@ impl FileWatcher {
         Ok(Self {
             _watcher: watcher,
             rx,
+            signature: FileSignature::read(&path),
+            next_metadata_poll: Instant::now() + METADATA_POLL_INTERVAL,
             path,
         })
     }
 
-    pub fn poll(&self) -> WatchPoll {
+    pub fn poll(&mut self) -> WatchPoll {
         let mut poll = WatchPoll::default();
         loop {
             match self.rx.try_recv() {
@@ -54,7 +72,44 @@ impl FileWatcher {
                 }
             }
         }
+
+        if poll.changed {
+            self.signature = FileSignature::read(&self.path);
+            self.next_metadata_poll = Instant::now() + METADATA_POLL_INTERVAL;
+            return poll;
+        }
+
+        if Instant::now() >= self.next_metadata_poll {
+            let signature = FileSignature::read(&self.path);
+            if signature != self.signature {
+                self.signature = signature;
+                poll.changed = true;
+            }
+            self.next_metadata_poll = Instant::now() + METADATA_POLL_INTERVAL;
+        }
+
         poll
+    }
+}
+
+impl FileSignature {
+    fn read(path: &Path) -> Self {
+        match fs::metadata(path) {
+            Ok(metadata) => Self {
+                exists: true,
+                dev: Some(metadata.dev()),
+                ino: Some(metadata.ino()),
+                len: Some(metadata.len()),
+                modified: metadata.modified().ok(),
+            },
+            Err(_) => Self {
+                exists: false,
+                dev: None,
+                ino: None,
+                len: None,
+                modified: None,
+            },
+        }
     }
 }
 
@@ -162,7 +217,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         let target = dir.join("doc.md");
         fs::write(&target, "content").unwrap();
-        let watcher = FileWatcher::new(&target).unwrap();
+        let mut watcher = FileWatcher::new(&target).unwrap();
         std::thread::sleep(Duration::from_millis(100));
         let _ = watcher.poll();
 
@@ -220,5 +275,36 @@ mod tests {
         let _ = fs::remove_file(&target);
         let _ = fs::remove_dir(&dir);
         assert!(saw_relevant, "expected notify event for atomic rename");
+    }
+
+    #[test]
+    fn metadata_poll_detects_recreate_when_notify_events_are_missing() {
+        let dir = std::env::temp_dir().join(format!(
+            "mdview-watch-recreate-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("doc.md");
+        fs::write(&target, "old").unwrap();
+        let mut watcher = FileWatcher::new(&target).unwrap();
+        let old_signature = watcher.signature.clone();
+
+        fs::remove_file(&target).unwrap();
+        fs::write(&target, "new recreated content").unwrap();
+        while watcher.rx.try_recv().is_ok() {}
+
+        watcher.signature = old_signature;
+        watcher.next_metadata_poll = Instant::now();
+        let poll = watcher.poll();
+
+        let _ = fs::remove_file(&target);
+        let _ = fs::remove_dir(&dir);
+        assert!(
+            poll.changed,
+            "metadata fallback should detect recreated file"
+        );
     }
 }
