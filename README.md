@@ -16,7 +16,7 @@ automatically when the viewed file changes.
 - Automatic reloads on file changes and atomic saves
 - Light-theme-friendly terminal styling
 - GitHub-style pipe table rendering with alignment and wrapping
-- Highlighted fenced code blocks for JSON, HTTP, XML, and plain text
+- Highlighted fenced code blocks for JSON, HTTP, SQL/PostgreSQL, XML, and plain text
 - iTerm2 inline images through tmux/SSH where supported
 - Nix flake packages and development shells for x86_64-linux and aarch64-linux
 

@@ -1563,6 +1563,21 @@ mod tests {
     }
 
     #[test]
+    fn highlights_sql_code_blocks() {
+        let source = "```postgresql\nSELECT id::uuid FROM \"user\" WHERE deleted_at IS NULL RETURNING jsonb_build_object('id', id);\n```";
+        let lines = render_markdown(Path::new("/tmp/doc.md"), source, 100);
+
+        assert_eq!(find_segment(&lines, "SELECT").style, Style::code_keyword());
+        assert_eq!(find_segment(&lines, "uuid").style, Style::code_key());
+        assert_eq!(find_segment(&lines, r#""user""#).style, Style::code_key());
+        assert_eq!(find_segment(&lines, "NULL").style, Style::code_literal());
+        assert_eq!(
+            find_segment(&lines, "jsonb_build_object").style,
+            Style::code_key()
+        );
+    }
+
+    #[test]
     fn highlights_xml_code_blocks() {
         let lines = render_markdown(
             Path::new("/tmp/doc.md"),

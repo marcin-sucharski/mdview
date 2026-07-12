@@ -42,6 +42,24 @@ Content-Type: application/json
 }
 ```
 
+PostgreSQL SQL blocks highlight comments, keywords, casts, strings, JSONB
+operators, and dollar-quoted function bodies.
+
+```postgresql
+-- PostgreSQL example
+SELECT u.id, u.name::text, $1::uuid, now()
+FROM "user" AS u
+WHERE u.profile @> '{"role":"admin"}'::jsonb
+RETURNING jsonb_build_object('id', u.id);
+
+CREATE FUNCTION touch_user() RETURNS trigger AS $$
+BEGIN
+  NEW.updated_at := now();
+  RETURN NEW;
+END
+$$ LANGUAGE plpgsql;
+```
+
 XML and plain text are supported too.
 
 ```xml

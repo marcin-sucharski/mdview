@@ -121,11 +121,12 @@ wait_for_text "Unicode" "table body render"
 wait_for_text "wide characters" "table wrapped content render"
 stop_viewer
 
-start_viewer "$ROOT/examples/code-blocks.md" 96 58
+start_viewer "$ROOT/examples/code-blocks.md" 96 72
 wait_for_text "Code Block Highlighting" "code block example render"
 wait_for_text "Content-Type: application/json" "HTTP headers render"
 wait_for_text "# response comment" "HTTP comment render"
 wait_for_text "200 OK" "bare HTTP response render"
+wait_for_text "jsonb_build_object" "PostgreSQL SQL code render"
 wait_for_text "<item id=\"1\">alpha</item>" "XML code render"
 stop_viewer
 

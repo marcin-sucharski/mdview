@@ -15,11 +15,21 @@ enum HttpState {
     Body(BodyKind),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SqlState {
+    Normal,
+    BlockComment(usize),
+    DollarString(String),
+}
+
 pub fn highlight_code(language: &str, source: &str) -> Vec<Vec<Segment>> {
     let language = normalize_language(language);
     match language.as_str() {
         "json" => highlight_json_lines(source),
         "http" | "httpspec" => highlight_http_lines(source),
+        "sql" | "postgres" | "postgresql" | "pgsql" | "psql" | "plpgsql" => {
+            highlight_sql_lines(source)
+        }
         "xml" | "html" => highlight_xml_lines(source),
         "text" | "txt" | "plain" | "plaintext" | "text/plain" => plain_lines(source),
         _ => plain_lines(source),
@@ -173,6 +183,453 @@ fn word_end(line: &str, start: usize) -> usize {
             (!ch.is_ascii_alphanumeric() && ch != '_' && offset > 0).then_some(start + offset)
         })
         .unwrap_or(line.len())
+}
+
+fn highlight_sql_lines(source: &str) -> Vec<Vec<Segment>> {
+    let mut state = SqlState::Normal;
+    source_lines(source)
+        .into_iter()
+        .map(|line| highlight_sql_line(line, &mut state))
+        .collect()
+}
+
+fn highlight_sql_line(line: &str, state: &mut SqlState) -> Vec<Segment> {
+    let mut segments = Vec::new();
+    let mut i = 0usize;
+
+    while i < line.len() {
+        match state {
+            SqlState::BlockComment(depth) => {
+                let (end, next_depth) = sql_block_comment_end(line, i, *depth);
+                push_segment(&mut segments, &line[i..end], Style::code_comment());
+                if next_depth == 0 {
+                    *state = SqlState::Normal;
+                } else {
+                    *depth = next_depth;
+                }
+                i = end;
+            }
+            SqlState::DollarString(delimiter) => {
+                if let Some(end) = line[i..].find(delimiter.as_str()) {
+                    let end = i + end + delimiter.len();
+                    push_segment(&mut segments, &line[i..end], Style::code_string());
+                    *state = SqlState::Normal;
+                    i = end;
+                } else {
+                    push_segment(&mut segments, &line[i..], Style::code_string());
+                    i = line.len();
+                }
+            }
+            SqlState::Normal => {
+                let rest = &line[i..];
+                let ch = rest.chars().next().unwrap_or_default();
+
+                if ch.is_whitespace() {
+                    let end = scan_while(line, i, char::is_whitespace);
+                    push_segment(&mut segments, &line[i..end], Style::code());
+                    i = end;
+                } else if rest.starts_with("--") {
+                    push_segment(&mut segments, rest, Style::code_comment());
+                    i = line.len();
+                } else if rest.starts_with("/*") {
+                    let (end, depth) = sql_block_comment_end(line, i, 0);
+                    push_segment(&mut segments, &line[i..end], Style::code_comment());
+                    if depth > 0 {
+                        *state = SqlState::BlockComment(depth);
+                    }
+                    i = end;
+                } else if let Some(delimiter) = sql_dollar_quote_delimiter(rest) {
+                    let search_start = i + delimiter.len();
+                    if let Some(close) = line[search_start..].find(delimiter.as_str()) {
+                        let end = search_start + close + delimiter.len();
+                        push_segment(&mut segments, &line[i..end], Style::code_string());
+                        i = end;
+                    } else {
+                        push_segment(&mut segments, &line[i..], Style::code_string());
+                        *state = SqlState::DollarString(delimiter);
+                        i = line.len();
+                    }
+                } else if let Some(end) = sql_prefixed_string_end(line, i) {
+                    push_segment(&mut segments, &line[i..end], Style::code_string());
+                    i = end;
+                } else if ch == '\'' {
+                    let end = sql_quoted_end(line, i, '\'', false);
+                    push_segment(&mut segments, &line[i..end], Style::code_string());
+                    i = end;
+                } else if ch == '"' {
+                    let end = sql_quoted_end(line, i, '"', false);
+                    push_segment(&mut segments, &line[i..end], Style::code_key());
+                    i = end;
+                } else if ch == '$' && rest[1..].starts_with(|next: char| next.is_ascii_digit()) {
+                    let end = i + 1 + scan_ascii_digits(&rest[1..]);
+                    push_segment(&mut segments, &line[i..end], Style::code_number());
+                    i = end;
+                } else if ch.is_ascii_digit() {
+                    let end = sql_number_end(line, i);
+                    push_segment(&mut segments, &line[i..end], Style::code_number());
+                    i = end;
+                } else if is_sql_identifier_start(ch) {
+                    let end = sql_identifier_end(line, i);
+                    let token = &line[i..end];
+                    let style = sql_identifier_style(line, end, token);
+                    push_segment(&mut segments, token, style);
+                    i = end;
+                } else if let Some(len) = sql_operator_len(rest) {
+                    push_segment(&mut segments, &line[i..i + len], Style::code_punctuation());
+                    i += len;
+                } else {
+                    push_segment(&mut segments, &line[i..i + ch.len_utf8()], Style::code());
+                    i += ch.len_utf8();
+                }
+            }
+        }
+    }
+
+    if segments.is_empty() {
+        segments.push(Segment::new("", Style::code()));
+    }
+    segments
+}
+
+fn sql_block_comment_end(line: &str, start: usize, mut depth: usize) -> (usize, usize) {
+    let mut i = start;
+    while i < line.len() {
+        let rest = &line[i..];
+        if rest.starts_with("/*") {
+            depth += 1;
+            i += 2;
+        } else if rest.starts_with("*/") {
+            depth = depth.saturating_sub(1);
+            i += 2;
+            if depth == 0 {
+                return (i, 0);
+            }
+        } else {
+            i += rest.chars().next().unwrap_or_default().len_utf8();
+        }
+    }
+    (line.len(), depth)
+}
+
+fn sql_dollar_quote_delimiter(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    if bytes.first().copied() != Some(b'$') {
+        return None;
+    }
+
+    let mut end = 1usize;
+    while end < bytes.len() && is_sql_dollar_tag_byte(bytes[end]) {
+        end += 1;
+    }
+    (end < bytes.len() && bytes[end] == b'$').then(|| text[..=end].to_string())
+}
+
+fn is_sql_dollar_tag_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+fn sql_prefixed_string_end(line: &str, start: usize) -> Option<usize> {
+    let rest = &line[start..];
+    let lower = rest.to_ascii_lowercase();
+    let (quote_offset, backslash_escape) = if lower.starts_with("e'") || lower.starts_with("b'") {
+        (1, lower.starts_with("e'"))
+    } else if lower.starts_with("u&'") {
+        (2, true)
+    } else {
+        return None;
+    };
+    Some(sql_quoted_end(
+        line,
+        start + quote_offset,
+        '\'',
+        backslash_escape,
+    ))
+}
+
+fn sql_quoted_end(text: &str, start: usize, quote: char, backslash_escape: bool) -> usize {
+    let mut escaped = false;
+    let mut i = start + quote.len_utf8();
+
+    while i < text.len() {
+        let ch = text[i..].chars().next().unwrap_or_default();
+        if backslash_escape && escaped {
+            escaped = false;
+            i += ch.len_utf8();
+        } else if backslash_escape && ch == '\\' {
+            escaped = true;
+            i += ch.len_utf8();
+        } else if ch == quote {
+            let next = i + quote.len_utf8();
+            if text[next..].starts_with(quote) {
+                i = next + quote.len_utf8();
+            } else {
+                return next;
+            }
+        } else {
+            i += ch.len_utf8();
+        }
+    }
+
+    text.len()
+}
+
+fn scan_ascii_digits(text: &str) -> usize {
+    text.as_bytes()
+        .iter()
+        .take_while(|byte| byte.is_ascii_digit())
+        .count()
+}
+
+fn sql_number_end(line: &str, start: usize) -> usize {
+    let bytes = line.as_bytes();
+    let mut end = start + scan_ascii_digits(&line[start..]);
+
+    if bytes.get(end) == Some(&b'.') && bytes.get(end + 1).is_some_and(u8::is_ascii_digit) {
+        end += 1 + scan_ascii_digits(&line[end + 1..]);
+    }
+
+    if bytes
+        .get(end)
+        .is_some_and(|byte| matches!(byte, b'e' | b'E'))
+    {
+        let exponent = end + 1;
+        let digits = if bytes
+            .get(exponent)
+            .is_some_and(|byte| matches!(byte, b'+' | b'-'))
+        {
+            exponent + 1
+        } else {
+            exponent
+        };
+        let digit_count = scan_ascii_digits(&line[digits..]);
+        if digit_count > 0 {
+            end = digits + digit_count;
+        }
+    }
+
+    end
+}
+
+fn is_sql_identifier_start(ch: char) -> bool {
+    ch.is_ascii_alphabetic() || ch == '_'
+}
+
+fn is_sql_identifier_char(ch: char) -> bool {
+    ch.is_ascii_alphanumeric() || matches!(ch, '_' | '$')
+}
+
+fn sql_identifier_end(line: &str, start: usize) -> usize {
+    line[start..]
+        .char_indices()
+        .find_map(|(offset, ch)| {
+            (!is_sql_identifier_char(ch) && offset > 0).then_some(start + offset)
+        })
+        .unwrap_or(line.len())
+}
+
+fn sql_identifier_style(line: &str, end: usize, token: &str) -> Style {
+    let lower = token.to_ascii_lowercase();
+    if is_sql_literal(&lower) {
+        Style::code_literal()
+    } else if is_sql_keyword(&lower) {
+        Style::code_keyword()
+    } else if is_postgres_type(&lower) || next_non_ws(line, end).is_some_and(|ch| ch == '(') {
+        Style::code_key()
+    } else {
+        Style::code()
+    }
+}
+
+fn next_non_ws(text: &str, idx: usize) -> Option<char> {
+    text[idx..].chars().find(|ch| !ch.is_whitespace())
+}
+
+fn is_sql_literal(token: &str) -> bool {
+    matches!(token, "false" | "null" | "true" | "unknown")
+}
+
+fn is_sql_keyword(token: &str) -> bool {
+    matches!(
+        token,
+        "all"
+            | "alter"
+            | "and"
+            | "any"
+            | "as"
+            | "asc"
+            | "begin"
+            | "between"
+            | "by"
+            | "case"
+            | "check"
+            | "commit"
+            | "conflict"
+            | "constraint"
+            | "create"
+            | "cross"
+            | "current"
+            | "default"
+            | "delete"
+            | "desc"
+            | "distinct"
+            | "do"
+            | "drop"
+            | "else"
+            | "end"
+            | "except"
+            | "exists"
+            | "for"
+            | "foreign"
+            | "from"
+            | "full"
+            | "function"
+            | "grant"
+            | "group"
+            | "having"
+            | "if"
+            | "ilike"
+            | "in"
+            | "index"
+            | "inner"
+            | "insert"
+            | "intersect"
+            | "into"
+            | "is"
+            | "join"
+            | "language"
+            | "lateral"
+            | "left"
+            | "limit"
+            | "not"
+            | "nulls"
+            | "offset"
+            | "on"
+            | "or"
+            | "order"
+            | "outer"
+            | "over"
+            | "partition"
+            | "primary"
+            | "references"
+            | "return"
+            | "returning"
+            | "right"
+            | "rollback"
+            | "select"
+            | "set"
+            | "table"
+            | "then"
+            | "to"
+            | "truncate"
+            | "union"
+            | "unique"
+            | "update"
+            | "using"
+            | "values"
+            | "when"
+            | "where"
+            | "window"
+            | "with"
+    )
+}
+
+fn is_postgres_type(token: &str) -> bool {
+    matches!(
+        token,
+        "bigint"
+            | "bigserial"
+            | "bit"
+            | "boolean"
+            | "box"
+            | "bytea"
+            | "char"
+            | "character"
+            | "cidr"
+            | "circle"
+            | "date"
+            | "decimal"
+            | "double"
+            | "inet"
+            | "int"
+            | "int2"
+            | "int4"
+            | "int8"
+            | "integer"
+            | "interval"
+            | "json"
+            | "jsonb"
+            | "line"
+            | "lseg"
+            | "macaddr"
+            | "money"
+            | "numeric"
+            | "path"
+            | "pg_lsn"
+            | "plpgsql"
+            | "point"
+            | "polygon"
+            | "real"
+            | "serial"
+            | "serial2"
+            | "serial4"
+            | "serial8"
+            | "smallint"
+            | "smallserial"
+            | "text"
+            | "time"
+            | "timestamp"
+            | "timestamptz"
+            | "timetz"
+            | "trigger"
+            | "tsquery"
+            | "tsvector"
+            | "uuid"
+            | "varbit"
+            | "varchar"
+            | "xml"
+    )
+}
+
+fn sql_operator_len(text: &str) -> Option<usize> {
+    [
+        "#>>", "->>", "::", "->", "#>", "@>", "<@", "&&", "||", "!=", "<>", "<=", ">=", ":=", "=>",
+    ]
+    .iter()
+    .find_map(|operator| text.starts_with(operator).then_some(operator.len()))
+    .or_else(|| {
+        text.chars()
+            .next()
+            .filter(|ch| {
+                matches!(
+                    ch,
+                    '(' | ')'
+                        | '['
+                        | ']'
+                        | '{'
+                        | '}'
+                        | ','
+                        | ';'
+                        | '.'
+                        | ':'
+                        | '+'
+                        | '-'
+                        | '*'
+                        | '/'
+                        | '%'
+                        | '='
+                        | '<'
+                        | '>'
+                        | '!'
+                        | '~'
+                        | '@'
+                        | '#'
+                        | '^'
+                        | '&'
+                        | '|'
+                )
+            })
+            .map(char::len_utf8)
+    })
 }
 
 fn highlight_http_lines(source: &str) -> Vec<Vec<Segment>> {
@@ -566,6 +1023,51 @@ mod tests {
         assert_eq!(*find_style(&lines, "200"), Style::code_number());
         assert_eq!(*find_style(&lines, "Content-Type"), Style::code_key());
         assert_eq!(*find_style(&lines, r#""ok""#), Style::code_key());
+    }
+
+    #[test]
+    fn highlights_postgres_sql_tokens() {
+        let source = "-- fetch active users\nSELECT u.id, u.name::text, $1::uuid, now()\nFROM \"user\" AS u\nWHERE u.deleted_at IS NULL\n  AND u.profile @> '{\"role\":\"admin\"}'::jsonb\nRETURNING jsonb_build_object('id', u.id);";
+        let lines = highlight_code("postgresql", source);
+
+        assert_eq!(
+            *find_style(&lines, "-- fetch active users"),
+            Style::code_comment()
+        );
+        assert_eq!(*find_style(&lines, "SELECT"), Style::code_keyword());
+        assert_eq!(*find_style(&lines, "text"), Style::code_key());
+        assert_eq!(*find_style(&lines, "$1"), Style::code_number());
+        assert_eq!(*find_style(&lines, "uuid"), Style::code_key());
+        assert_eq!(*find_style(&lines, "now"), Style::code_key());
+        assert_eq!(*find_style(&lines, r#""user""#), Style::code_key());
+        assert_eq!(*find_style(&lines, "NULL"), Style::code_literal());
+        assert_eq!(*find_style(&lines, "@>"), Style::code_punctuation());
+        assert_eq!(
+            *find_style(&lines, r#"'{"role":"admin"}'"#),
+            Style::code_string()
+        );
+        assert_eq!(*find_style(&lines, "jsonb"), Style::code_key());
+        assert_eq!(*find_style(&lines, "RETURNING"), Style::code_keyword());
+        assert_eq!(*find_style(&lines, "jsonb_build_object"), Style::code_key());
+        assert_eq!(*find_style(&lines, "'id'"), Style::code_string());
+    }
+
+    #[test]
+    fn highlights_postgres_dollar_strings_and_block_comments() {
+        let source = "/* outer\n   /* nested */ comment */\nCREATE FUNCTION touch_user() RETURNS trigger AS $$\nBEGIN\n  NEW.updated_at := now();\n  RETURN NEW;\nEND\n$$ LANGUAGE plpgsql;";
+        let lines = highlight_code("sql", source);
+
+        assert_eq!(*find_style(&lines, "/* outer"), Style::code_comment());
+        assert_eq!(
+            *find_style(&lines, "   /* nested */ comment */"),
+            Style::code_comment()
+        );
+        assert_eq!(*find_style(&lines, "CREATE"), Style::code_keyword());
+        assert_eq!(*find_style(&lines, "touch_user"), Style::code_key());
+        assert_eq!(*find_style(&lines, "$$"), Style::code_string());
+        assert_eq!(*find_style(&lines, "BEGIN"), Style::code_string());
+        assert_eq!(*find_style(&lines, "LANGUAGE"), Style::code_keyword());
+        assert_eq!(*find_style(&lines, "plpgsql"), Style::code_key());
     }
 
     #[test]
