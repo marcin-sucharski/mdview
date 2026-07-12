@@ -26,21 +26,19 @@ Content-Type: application/json
 }
 ```
 
-Request and response examples can be separated with `>>>`.
+Responses can follow the request directly, or be separated with `>>>`.
 
 ```http
-GET /items/1 HTTP/1.1
-Accept: application/json
+GET /endpoint
+Authorization: ...
 
->>>
 # response comment
-HTTP 200 OK
+200 OK
 Content-Type: application/json
 
   # response body comment
 {
-  "id": 1,
-  "name": "alpha"
+  "id": 1
 }
 ```
 

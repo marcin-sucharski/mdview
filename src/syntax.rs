@@ -216,7 +216,13 @@ fn highlight_http_lines(source: &str) -> Vec<Vec<Segment>> {
                 }
             }
             HttpState::Body(kind) => {
-                out.push(highlight_body_line(line, kind));
+                if is_http_response_start_line(line) {
+                    out.push(highlight_http_start_line(line));
+                    state = HttpState::Headers;
+                    content_type = BodyKind::Unknown;
+                } else {
+                    out.push(highlight_body_line(line, kind));
+                }
             }
         }
     }
@@ -231,7 +237,15 @@ fn is_http_comment_line(line: &str) -> bool {
     line.trim_start().starts_with('#')
 }
 
+fn is_http_response_start_line(line: &str) -> bool {
+    response_status_parts(line).is_some()
+}
+
 fn highlight_http_start_line(line: &str) -> Vec<Segment> {
+    if let Some((protocol, status, reason)) = response_status_parts(line) {
+        return highlight_http_response_start_line(protocol, status, reason);
+    }
+
     let mut segments = Vec::new();
     let Some((first, rest)) = line.split_once(' ') else {
         push_segment(&mut segments, line, Style::code_keyword());
@@ -253,6 +267,48 @@ fn highlight_http_start_line(line: &str) -> Vec<Segment> {
         push_segment(&mut segments, rest, Style::code());
     }
 
+    segments
+}
+
+fn response_status_parts(line: &str) -> Option<(Option<&str>, &str, &str)> {
+    let trimmed = line.trim_start();
+    let (first, rest) = trimmed.split_once(' ').unwrap_or((trimmed, ""));
+    if is_http_status_code(first) {
+        return Some((None, first, rest));
+    }
+
+    if !first.starts_with("HTTP") {
+        return None;
+    }
+
+    let rest = rest.trim_start();
+    let (status, reason) = rest.split_once(' ').unwrap_or((rest, ""));
+    is_http_status_code(status).then_some((Some(first), status, reason))
+}
+
+fn is_http_status_code(token: &str) -> bool {
+    token.len() == 3
+        && token.starts_with(|ch: char| matches!(ch, '1'..='5'))
+        && token.chars().all(|ch| ch.is_ascii_digit())
+}
+
+fn highlight_http_response_start_line(
+    protocol: Option<&str>,
+    status: &str,
+    reason: &str,
+) -> Vec<Segment> {
+    let mut segments = Vec::new();
+
+    if let Some(protocol) = protocol {
+        push_segment(&mut segments, protocol, Style::code_keyword());
+        push_segment(&mut segments, " ", Style::code());
+    }
+
+    push_segment(&mut segments, status, Style::code_number());
+    if !reason.is_empty() {
+        push_segment(&mut segments, " ", Style::code());
+        push_segment(&mut segments, reason, Style::code());
+    }
     segments
 }
 
@@ -498,6 +554,18 @@ mod tests {
             Style::code_comment()
         );
         assert_eq!(*find_style(&lines, r#""id""#), Style::code_key());
+    }
+
+    #[test]
+    fn highlights_http_bare_status_response_json_without_separator() {
+        let source = "GET /endpoint\nAuthorization: ...\n\n200 OK\nContent-Type: application/json\n\n{\"ok\": true}";
+        let lines = highlight_code("http", source);
+
+        assert_eq!(*find_style(&lines, "GET"), Style::code_keyword());
+        assert_eq!(*find_style(&lines, "Authorization"), Style::code_key());
+        assert_eq!(*find_style(&lines, "200"), Style::code_number());
+        assert_eq!(*find_style(&lines, "Content-Type"), Style::code_key());
+        assert_eq!(*find_style(&lines, r#""ok""#), Style::code_key());
     }
 
     #[test]
