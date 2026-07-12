@@ -181,6 +181,11 @@ fn highlight_http_lines(source: &str) -> Vec<Vec<Segment>> {
     let mut out = Vec::new();
 
     for line in source_lines(source) {
+        if is_http_comment_line(line) {
+            out.push(vec![Segment::new(line, Style::code_comment())]);
+            continue;
+        }
+
         if line.trim() == ">>>" {
             out.push(vec![Segment::new(line, Style::code_comment())]);
             state = HttpState::Start;
@@ -220,6 +225,10 @@ fn highlight_http_lines(source: &str) -> Vec<Vec<Segment>> {
         out.push(vec![Segment::new("", Style::code())]);
     }
     out
+}
+
+fn is_http_comment_line(line: &str) -> bool {
+    line.trim_start().starts_with('#')
 }
 
 fn highlight_http_start_line(line: &str) -> Vec<Segment> {
@@ -464,6 +473,30 @@ mod tests {
         assert_eq!(*find_style(&lines, r#""ok""#), Style::code_key());
         assert_eq!(*find_style(&lines, "HTTP"), Style::code_keyword());
         assert_eq!(*find_style(&lines, "200"), Style::code_number());
+        assert_eq!(*find_style(&lines, r#""id""#), Style::code_key());
+    }
+
+    #[test]
+    fn highlights_http_hash_comments_without_changing_state() {
+        let source = "# request note\nPOST /items HTTP/1.1\n# header note\nContent-Type: application/json\n# body follows\n\n# body note\n{\"ok\": true}\n>>>\n# response note\nHTTP 200 OK\nContent-Type: application/json\n\n  # response body note\n{\"id\": 2}";
+        let lines = highlight_code("http", source);
+
+        assert_eq!(*find_style(&lines, "# request note"), Style::code_comment());
+        assert_eq!(*find_style(&lines, "POST"), Style::code_keyword());
+        assert_eq!(*find_style(&lines, "# header note"), Style::code_comment());
+        assert_eq!(*find_style(&lines, "Content-Type"), Style::code_key());
+        assert_eq!(*find_style(&lines, "# body note"), Style::code_comment());
+        assert_eq!(*find_style(&lines, r#""ok""#), Style::code_key());
+        assert_eq!(
+            *find_style(&lines, "# response note"),
+            Style::code_comment()
+        );
+        assert_eq!(*find_style(&lines, "HTTP"), Style::code_keyword());
+        assert_eq!(*find_style(&lines, "200"), Style::code_number());
+        assert_eq!(
+            *find_style(&lines, "  # response body note"),
+            Style::code_comment()
+        );
         assert_eq!(*find_style(&lines, r#""id""#), Style::code_key());
     }
 
