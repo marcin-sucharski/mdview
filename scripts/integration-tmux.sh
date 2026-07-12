@@ -88,7 +88,7 @@ stop_viewer() {
 printf 'integration-tmux: using %s\n' "$("$TMUX_BIN" -V)"
 printf 'integration-tmux: testing %s\n' "$BIN"
 
-start_viewer "$ROOT/examples/long.md" 100 32
+start_viewer "$ROOT/examples/long.md" 100 32 "MDVIEW_MOUSE=wheel"
 wait_for_text "Long Scrolling Example" "initial long document render"
 send_key j
 wait_until_gone "Long Scrolling Example" "j scrolled down"
@@ -131,7 +131,15 @@ stop_viewer
 SELECT_FILE="$TMPDIR/select.md"
 printf 'alpha beta gamma\nsecond line\n' >"$SELECT_FILE"
 start_viewer "$SELECT_FILE" 80 20
-wait_for_text "alpha beta gamma" "selection test document"
+wait_for_text "alpha beta gamma" "default selection test document"
+send_literal $'\033[<0;1;1M'
+send_literal $'\033[<32;6;1M'
+send_literal $'\033[<0;6;1m'
+wait_until_gone "selected" "tmux default does not capture mouse drag"
+stop_viewer
+
+start_viewer "$SELECT_FILE" 80 20 "MDVIEW_MOUSE=on"
+wait_for_text "alpha beta gamma" "application selection test document"
 send_literal $'\033[<0;1;1M'
 send_literal $'\033[<32;6;1M'
 send_literal $'\033[<0;6;1m'

@@ -145,22 +145,27 @@ fn run_file(path: PathBuf) -> Result<(), AppError> {
                     }
                 }
                 TermEvent::Mouse(mouse) => match mouse.kind {
-                    MouseEventKind::ScrollUp => {
+                    MouseEventKind::ScrollUp if terminal.mouse_mode().handles_wheel() => {
                         state.scroll_by(-WHEEL_LINES, viewport_rows as usize);
                         draw_needed = true;
                     }
-                    MouseEventKind::ScrollDown => {
+                    MouseEventKind::ScrollDown if terminal.mouse_mode().handles_wheel() => {
                         state.scroll_by(WHEEL_LINES, viewport_rows as usize);
                         draw_needed = true;
                     }
-                    MouseEventKind::Down(MouseButton::Left) => {
+                    MouseEventKind::Down(MouseButton::Left)
+                        if terminal.mouse_mode().handles_selection() =>
+                    {
                         if let Some(point) = state.mouse_point(mouse, viewport_rows as usize) {
                             state.selection.begin(point);
                             state.last_status = Some("selecting".to_string());
                             draw_needed = true;
                         }
                     }
-                    MouseEventKind::Drag(MouseButton::Left) if state.selection.is_active() => {
+                    MouseEventKind::Drag(MouseButton::Left)
+                        if terminal.mouse_mode().handles_selection()
+                            && state.selection.is_active() =>
+                    {
                         if let Some(point) = state.mouse_point(mouse, viewport_rows as usize) {
                             state.selection.update(point);
                             state.last_status = state
@@ -169,7 +174,10 @@ fn run_file(path: PathBuf) -> Result<(), AppError> {
                             draw_needed = true;
                         }
                     }
-                    MouseEventKind::Up(MouseButton::Left) if state.selection.is_active() => {
+                    MouseEventKind::Up(MouseButton::Left)
+                        if terminal.mouse_mode().handles_selection()
+                            && state.selection.is_active() =>
+                    {
                         if let Some(point) = state.mouse_point(mouse, viewport_rows as usize) {
                             state.selection.finish(point);
                             state.last_status = state
@@ -181,7 +189,9 @@ fn run_file(path: PathBuf) -> Result<(), AppError> {
                         }
                         draw_needed = true;
                     }
-                    MouseEventKind::Down(MouseButton::Right) => {
+                    MouseEventKind::Down(MouseButton::Right)
+                        if terminal.mouse_mode().handles_selection() =>
+                    {
                         state.copy_selection(&mut terminal, viewport_cols as usize)?;
                         draw_needed = true;
                     }

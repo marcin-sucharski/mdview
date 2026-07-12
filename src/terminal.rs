@@ -4,7 +4,6 @@ use crate::image::{
 use crate::rendered::{ImageSlot, LineContent, RenderLine, Segment, Style};
 use crate::selection::SelectionRange;
 use crossterm::cursor::{Hide, MoveTo, Show};
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{execute, queue};
 use std::env;
@@ -12,22 +11,61 @@ use std::fs;
 use std::io::{self, Stdout, Write};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+const ENABLE_WHEEL_MOUSE: &str = "\x1b[?1000h\x1b[?1006h";
+const ENABLE_FULL_MOUSE: &str = "\x1b[?1000h\x1b[?1002h\x1b[?1006h";
+const DISABLE_MOUSE: &str = "\x1b[?1006l\x1b[?1002l\x1b[?1003l\x1b[?1015l\x1b[?1000l";
+
 pub struct Terminal {
     stdout: Stdout,
     image_mode: ImageMode,
+    mouse_mode: MouseMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MouseMode {
+    Disabled,
+    Wheel,
+    Full,
+}
+
+impl MouseMode {
+    fn detect() -> Self {
+        let mouse = env::var("MDVIEW_MOUSE").ok();
+        let in_tmux = env::var_os("TMUX").is_some();
+        mouse_mode_from_env(mouse.as_deref(), in_tmux)
+    }
+
+    pub fn handles_wheel(self) -> bool {
+        matches!(self, Self::Wheel | Self::Full)
+    }
+
+    pub fn handles_selection(self) -> bool {
+        matches!(self, Self::Full)
+    }
+
+    fn enable_sequence(self) -> Option<&'static str> {
+        match self {
+            Self::Disabled => None,
+            Self::Wheel => Some(ENABLE_WHEEL_MOUSE),
+            Self::Full => Some(ENABLE_FULL_MOUSE),
+        }
+    }
 }
 
 impl Terminal {
     pub fn enter() -> io::Result<Self> {
         let mut stdout = io::stdout();
+        let mouse_mode = MouseMode::detect();
         terminal::enable_raw_mode()?;
-        if let Err(err) = execute!(
-            stdout,
-            EnterAlternateScreen,
-            EnableMouseCapture,
-            Hide,
-            Clear(ClearType::All)
-        ) {
+        let setup = (|| -> io::Result<()> {
+            execute!(stdout, EnterAlternateScreen, Hide, Clear(ClearType::All))?;
+            if let Some(sequence) = mouse_mode.enable_sequence() {
+                write!(stdout, "{sequence}")?;
+            }
+            stdout.flush()
+        })();
+        if let Err(err) = setup {
+            let _ = execute!(stdout, Show, LeaveAlternateScreen, Clear(ClearType::All));
             let _ = terminal::disable_raw_mode();
             return Err(err);
         }
@@ -35,7 +73,12 @@ impl Terminal {
         Ok(Self {
             stdout,
             image_mode: detect_image_mode(),
+            mouse_mode,
         })
+    }
+
+    pub fn mouse_mode(&self) -> MouseMode {
+        self.mouse_mode
     }
 
     pub fn viewport_size(&self) -> io::Result<(u16, u16)> {
@@ -210,14 +253,36 @@ impl Terminal {
 
 impl Drop for Terminal {
     fn drop(&mut self) {
+        if self.mouse_mode.enable_sequence().is_some() {
+            let _ = write!(self.stdout, "{DISABLE_MOUSE}");
+        }
         let _ = execute!(
             self.stdout,
             Show,
-            DisableMouseCapture,
             LeaveAlternateScreen,
             Clear(ClearType::All)
         );
         let _ = terminal::disable_raw_mode();
+    }
+}
+
+fn mouse_mode_from_env(value: Option<&str>, in_tmux: bool) -> MouseMode {
+    let default = if in_tmux {
+        MouseMode::Disabled
+    } else {
+        MouseMode::Wheel
+    };
+
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return default;
+    };
+
+    match value.to_ascii_lowercase().as_str() {
+        "0" | "false" | "no" | "off" | "disabled" => MouseMode::Disabled,
+        "1" | "true" | "yes" | "on" | "full" | "selection" => MouseMode::Full,
+        "scroll" | "wheel" => MouseMode::Wheel,
+        "auto" => default,
+        _ => default,
     }
 }
 
@@ -529,5 +594,34 @@ mod tests {
         assert!(wrapped.contains("\x1bPtmux;"));
         assert!(wrapped.contains("\x1b\x1b]52;c;Y29weQ==\x07"));
         assert!(wrapped.ends_with("\x1b\\"));
+    }
+
+    #[test]
+    fn mouse_mode_defaults_to_copy_friendly_tmux_behavior() {
+        assert_eq!(mouse_mode_from_env(None, true), MouseMode::Disabled);
+        assert_eq!(mouse_mode_from_env(None, false), MouseMode::Wheel);
+        assert_eq!(mouse_mode_from_env(Some("auto"), true), MouseMode::Disabled);
+        assert_eq!(mouse_mode_from_env(Some("auto"), false), MouseMode::Wheel);
+    }
+
+    #[test]
+    fn mouse_mode_respects_explicit_overrides() {
+        assert_eq!(mouse_mode_from_env(Some("off"), false), MouseMode::Disabled);
+        assert_eq!(mouse_mode_from_env(Some("wheel"), true), MouseMode::Wheel);
+        assert_eq!(mouse_mode_from_env(Some("on"), true), MouseMode::Full);
+        assert_eq!(
+            mouse_mode_from_env(Some("selection"), false),
+            MouseMode::Full
+        );
+    }
+
+    #[test]
+    fn mouse_tracking_sequences_do_not_enable_all_motion_reporting() {
+        assert_eq!(MouseMode::Disabled.enable_sequence(), None);
+        assert_eq!(MouseMode::Wheel.enable_sequence(), Some(ENABLE_WHEEL_MOUSE));
+        assert_eq!(MouseMode::Full.enable_sequence(), Some(ENABLE_FULL_MOUSE));
+        assert!(!ENABLE_WHEEL_MOUSE.contains("?1003h"));
+        assert!(!ENABLE_FULL_MOUSE.contains("?1003h"));
+        assert!(DISABLE_MOUSE.contains("?1003l"));
     }
 }

@@ -3,14 +3,15 @@
 `mdview` is a small Rust terminal UI for previewing Markdown on Linux.
 
 It renders strict CommonMark in the alternate screen, supports keyboard and
-mouse scrolling, shows local images in iTerm2-compatible terminals, and reloads
+optional mouse scrolling, shows local images in iTerm2-compatible terminals, and reloads
 automatically when the viewed file changes.
 
 ## Features
 
 - Read-only Markdown viewing with no editor mode
-- Keyboard and mouse scrolling
-- Mouse text selection with OSC 52 clipboard copy
+- Keyboard scrolling, with optional mouse wheel scrolling
+- Normal terminal/tmux text selection by default inside tmux
+- Optional in-app mouse text selection with OSC 52 clipboard copy
 - Case-insensitive in-view search with highlighted matches
 - Automatic reloads on file changes and atomic saves
 - Light-theme-friendly terminal styling
@@ -27,15 +28,21 @@ nix run . -- examples/basic.md
 
 Inside the viewer:
 
-- `j`, `Down`, or mouse wheel down scroll down
-- `k`, `Up`, or mouse wheel up scroll up
+- `j` or `Down` scroll down
+- `k` or `Up` scroll up
 - `PageDown` and `PageUp` scroll by a page
 - `g` and `G` jump to the top or bottom
 - `/` opens search, `Enter` searches, and empty `Enter` clears search
 - `n` moves to the next search match and `p` moves to the previous one
-- drag with the left mouse button to select text
-- `y`, `c`, `Enter`, or right click copies selected text to the clipboard
 - `q`, `Esc`, or `Ctrl-C` quit
+
+Mouse reporting is disabled by default inside tmux so normal tmux/iTerm2 text
+selection works. Outside tmux, mouse wheel scrolling is enabled by default.
+Set `MDVIEW_MOUSE=wheel` to force wheel scrolling, `MDVIEW_MOUSE=on` to enable
+wheel scrolling plus in-app drag selection, or `MDVIEW_MOUSE=off` to disable
+mouse reporting. With `MDVIEW_MOUSE=on`, drag with the left mouse button to
+select text, then press `y`, `c`, `Enter`, or right click to copy through OSC
+52.
 
 ## iTerm2 Images Through tmux
 
