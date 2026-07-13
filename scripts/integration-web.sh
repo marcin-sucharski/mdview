@@ -112,8 +112,18 @@ grep -Fq 'new EventSource("/events")' "$APP_HTML" || fail "application is missin
 grep -Fq 'File deleted' "$APP_HTML" || fail "application is missing its deleted-file state"
 grep -Fq 'height: 100dvh' "$APP_HTML" || fail "application shell does not use the viewport height"
 grep -Fq 'overflow-y: auto' "$APP_HTML" || fail "Markdown viewport is not vertically scrollable"
-grep -Fq 'padding: clamp(30px, 4.5vw, 68px)' "$APP_HTML" \
+grep -Fq 'padding: 24px 32px 96px' "$APP_HTML" \
   || fail "Markdown preview does not use its responsive full-width layout"
+grep -Fq 'font: normal 400 14px/24px var(--jira-font)' "$APP_HTML" \
+  || fail "Markdown preview does not use Jira description typography"
+grep -Fq 'border-left: 2px solid var(--jira-border)' "$APP_HTML" \
+  || fail "Markdown block quotes do not use Jira description styling"
+grep -Fq 'border-radius: 12px' "$APP_HTML" \
+  || fail "Markdown tables do not use Jira description styling"
+grep -Fq 'overflow-wrap: anywhere' "$APP_HTML" \
+  || fail "Markdown code blocks do not wrap long text"
+grep -Fq 'white-space: pre-wrap' "$APP_HTML" \
+  || fail "Markdown code blocks do not preserve whitespace while wrapping"
 grep -Fq 'prepareMarkdownPreview' "$APP_HTML" || fail "application is missing staged preview rendering"
 grep -Fq 'previewElement.replaceChildren(...staging.childNodes)' "$APP_HTML" \
   || fail "Markdown reload is not committed atomically"

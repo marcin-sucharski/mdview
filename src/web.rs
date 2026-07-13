@@ -1117,11 +1117,25 @@ mod tests {
     }
 
     #[test]
-    fn web_app_has_scrollable_full_width_atomic_preview_layout() {
+    fn web_app_has_scrollable_full_width_atomic_jira_preview_layout() {
         let app = include_str!("web_app.html");
         assert!(app.contains("height: 100dvh"));
         assert!(app.contains("overflow-y: auto"));
-        assert!(app.contains("padding: clamp(30px, 4.5vw, 68px)"));
+        assert!(app.contains("padding: 24px 32px 96px"));
+        assert!(app.contains("--jira-text: #292a2e"));
+        assert!(app.contains("font: normal 400 14px/24px var(--jira-font)"));
+        assert!(app.contains("font: normal 600 24px/28px var(--jira-font)"));
+        assert!(app.contains("border-left: 2px solid var(--jira-border)"));
+        assert!(app.contains("border-radius: 12px"));
+        assert!(app.contains("background: var(--jira-neutral)"));
+        assert!(app.contains("overflow-x: hidden"));
+        assert!(app.contains("overflow-wrap: anywhere"));
+        assert!(app.contains("white-space: pre-wrap"));
+        assert!(app.contains(
+            ".preview pre code {\n      display: block;\n      width: 100%;\n      min-width: 0"
+        ));
+        assert!(!app.contains(".preview h1::after"));
+        assert!(!app.contains(".preview pre.has-language"));
         assert!(app.contains("async function prepareMarkdownPreview"));
         assert!(app.contains("previewElement.replaceChildren(...staging.childNodes)"));
         assert!(app.contains("generation !== previewGeneration"));

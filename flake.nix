@@ -21,7 +21,7 @@
           pkgs = pkgsFor system;
           package = pkgs.rustPlatform.buildRustPackage {
             pname = "mdview";
-            version = "0.1.12";
+            version = "0.1.13";
             src = pkgs.lib.cleanSourceWith {
               src = ./.;
               filter = path: type:
