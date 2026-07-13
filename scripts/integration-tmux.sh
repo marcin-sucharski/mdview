@@ -80,6 +80,27 @@ send_literal() {
   tmuxc send-keys -t "$PANE" -l "$1"
 }
 
+start_raw_capture() {
+  local raw_log="$1"
+  : >"$raw_log"
+  local command
+  printf -v command 'cat > %q' "$raw_log"
+  tmuxc pipe-pane -t "$PANE" "$command"
+}
+
+stop_raw_capture() {
+  tmuxc pipe-pane -t "$PANE"
+}
+
+assert_no_full_screen_clear() {
+  local raw_log="$1"
+  local label="${2:-raw output}"
+  if LC_ALL=C grep -a -q $'\033\\[2J' "$raw_log" \
+    || LC_ALL=C grep -a -q $'\033\\[3J' "$raw_log"; then
+    fail_with_capture "full-screen clear emitted during: $label"
+  fi
+}
+
 stop_viewer() {
   send_key q >/dev/null 2>&1 || true
   tmuxc kill-session -t "$SESSION" >/dev/null 2>&1 || true
@@ -114,6 +135,19 @@ tmuxc resize-window -t "$SESSION" -x 58 -y 18
 wait_for_text "Long Scrolling Example" "render after resize"
 stop_viewer
 
+start_viewer "$ROOT/examples/long.md" 100 32 "MDVIEW_MOUSE=wheel"
+wait_for_text "Long Scrolling Example" "continuous redraw initial render"
+RAW_SCROLL_LOG="$TMPDIR/stress-scroll.raw"
+start_raw_capture "$RAW_SCROLL_LOG"
+send_key NPage
+wait_until_gone "Long Scrolling Example" "continuous redraw PageDown moved away from top"
+send_key j
+send_key Down
+sleep 0.2
+stop_raw_capture
+assert_no_full_screen_clear "$RAW_SCROLL_LOG" "stress document scroll"
+stop_viewer
+
 start_viewer "$ROOT/examples/tables.md" 72 28
 wait_for_text "Table Rendering" "table example render"
 wait_for_text "+-" "table border render"
@@ -140,14 +174,22 @@ send_literal $'\033[<0;6;1m'
 wait_until_gone "selected" "tmux default does not capture mouse drag"
 stop_viewer
 
+start_viewer "$SELECT_FILE" 80 20 "env -u TMUX"
+wait_for_text "alpha beta gamma" "SSH-like native selection test document"
+send_literal $'\033[<0;1;1M'
+send_literal $'\033[<32;6;1M'
+send_literal $'\033[<0;6;1m'
+wait_until_gone "selected" "default outside tmux preserves native terminal selection"
+stop_viewer
+
 start_viewer "$SELECT_FILE" 80 20 "MDVIEW_MOUSE=on"
 wait_for_text "alpha beta gamma" "application selection test document"
 send_literal $'\033[<0;1;1M'
 send_literal $'\033[<32;6;1M'
 send_literal $'\033[<0;6;1m'
 wait_for_text "selected" "mouse drag selected text"
-send_key y
-wait_for_text "copied" "selected text copied"
+send_key C-c
+wait_for_text "copied" "Ctrl-C copied selected text"
 stop_viewer
 
 SEARCH_FILE="$TMPDIR/search.md"
@@ -209,6 +251,25 @@ stop_viewer
 start_viewer "$ROOT/examples/images.md" 180 48 "MDVIEW_IMAGES=off TERM_PROGRAM=tmux"
 wait_for_text "[image: A small generated sample]" "explicit image fallback"
 wait_for_text "image output disabled by MDVIEW_IMAGES" "explicit image fallback reason"
+stop_viewer
+
+FALLBACK_IMAGE="$TMPDIR/fallback.ppm"
+FALLBACK_FILE="$TMPDIR/fallback.md"
+printf 'P3\n4 2\n255\n0 0 0\n' >"$FALLBACK_IMAGE"
+{
+  printf '![fallback](%s)\n\n```text\n' "$FALLBACK_IMAGE"
+  for i in $(seq 1 30); do
+    printf 'stale marker %02d\n' "$i"
+  done
+  printf '```\n'
+} >"$FALLBACK_FILE"
+start_viewer "$FALLBACK_FILE" 80 12 "MDVIEW_IMAGES=off TERM_PROGRAM=tmux"
+wait_for_text "[image: fallback]" "fallback redraw fixture"
+send_key G
+wait_for_text "stale marker 30" "fallback fixture moved to text"
+send_key g
+wait_for_text "[image: fallback]" "fallback fixture returned to image"
+wait_until_gone "stale marker" "fallback redraw cleared reserved image rows"
 stop_viewer
 
 printf 'integration-tmux: ok\n'

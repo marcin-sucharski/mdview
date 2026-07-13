@@ -23,7 +23,7 @@
         {
           default = pkgs.rustPlatform.buildRustPackage {
             pname = "mdview";
-            version = "0.1.10";
+            version = "0.1.11";
             src = pkgs.lib.cleanSourceWith {
               src = ./.;
               filter = path: type:
@@ -34,6 +34,21 @@
                 && !(type == "symlink" && name == "result");
             };
             cargoLock.lockFile = ./Cargo.lock;
+            nativeCheckInputs = [
+              pkgs.clippy
+              pkgs.rustfmt
+              pkgs.tmux
+            ];
+
+            postCheck = ''
+              cargo fmt --check
+              cargo clippy --offline -- -D warnings
+              unset CARGO_BUILD_TARGET
+              cargo build --offline
+              MDVIEW_BIN="$PWD/target/debug/mdview" \
+                MDVIEW_SKIP_BUILD=1 \
+                ${pkgs.bash}/bin/bash scripts/integration-tmux.sh
+            '';
 
             meta = {
               description = "A minimal terminal Markdown previewer for Linux";

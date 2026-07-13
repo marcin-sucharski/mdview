@@ -1,11 +1,12 @@
 use crate::rendered::ImageSlot;
 use std::env;
-use std::fs;
-use std::io;
+use std::fs::File;
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 const BASE64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+pub const MAX_IMAGE_BYTES: u64 = 10 * 1024 * 1024;
+const IMAGE_DIMENSION_PROBE_BYTES: u64 = 128 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ImageMode {
@@ -22,11 +23,10 @@ pub struct ImageDimensions {
 
 pub fn detect_image_mode() -> ImageMode {
     let env_get = |key: &str| env::var(key).ok();
-    let tmux_allow = tmux_allow_passthrough();
-    detect_image_mode_from(env_get, tmux_allow.as_deref())
+    detect_image_mode_from(env_get)
 }
 
-pub fn detect_image_mode_from<F>(env_get: F, _tmux_allow_passthrough: Option<&str>) -> ImageMode
+pub fn detect_image_mode_from<F>(env_get: F) -> ImageMode
 where
     F: Fn(&str) -> Option<String>,
 {
@@ -74,17 +74,6 @@ where
     ImageMode::Direct
 }
 
-pub fn tmux_allow_passthrough() -> Option<String> {
-    let output = Command::new("tmux")
-        .args(["show-options", "-gqv", "allow-passthrough"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
 pub fn base64_encode(bytes: &[u8]) -> String {
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
@@ -118,7 +107,18 @@ pub fn image_dimensions(bytes: &[u8]) -> Option<ImageDimensions> {
 }
 
 pub fn build_image_slot(path: PathBuf, alt: String, max_width: u16) -> io::Result<ImageSlot> {
-    let bytes = fs::read(&path)?;
+    let file = File::open(&path)?;
+    let len = file.metadata()?.len();
+    if len > MAX_IMAGE_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("image is too large ({len} bytes; limit is {MAX_IMAGE_BYTES} bytes)"),
+        ));
+    }
+
+    let mut bytes = Vec::with_capacity(len.min(IMAGE_DIMENSION_PROBE_BYTES) as usize);
+    file.take(IMAGE_DIMENSION_PROBE_BYTES)
+        .read_to_end(&mut bytes)?;
     let dimensions = image_dimensions(&bytes);
     let (width_cells, height_cells) = dimensions
         .map(|dims| scaled_cells(dims, max_width))
@@ -357,6 +357,8 @@ fn scaled_cells(dimensions: ImageDimensions, max_width: u16) -> (u16, u16) {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn encodes_base64_vectors() {
@@ -446,13 +448,13 @@ mod tests {
         let mut values = HashMap::new();
         values.insert("TERM_PROGRAM", "iTerm.app");
         let env_get = |key: &str| values.get(key).map(|value| value.to_string());
-        assert_eq!(detect_image_mode_from(env_get, None), ImageMode::Direct);
+        assert_eq!(detect_image_mode_from(env_get), ImageMode::Direct);
 
         values.clear();
         values.insert("TERM", "xterm-256color");
         let env_get = |key: &str| values.get(key).map(|value| value.to_string());
         assert!(matches!(
-            detect_image_mode_from(env_get, None),
+            detect_image_mode_from(env_get),
             ImageMode::Disabled(reason) if reason.contains("MDVIEW_IMAGES=force")
         ));
 
@@ -460,46 +462,34 @@ mod tests {
         values.insert("TERM_PROGRAM", "tmux");
         values.insert("TMUX", "/tmp/tmux");
         let env_get = |key: &str| values.get(key).map(|value| value.to_string());
-        assert_eq!(
-            detect_image_mode_from(env_get, Some("off")),
-            ImageMode::TmuxPassthrough
-        );
+        assert_eq!(detect_image_mode_from(env_get), ImageMode::TmuxPassthrough);
 
         values.clear();
         values.insert("TERM", "screen-256color");
         let env_get = |key: &str| values.get(key).map(|value| value.to_string());
-        assert_eq!(
-            detect_image_mode_from(env_get, None),
-            ImageMode::TmuxPassthrough
-        );
+        assert_eq!(detect_image_mode_from(env_get), ImageMode::TmuxPassthrough);
 
         values.clear();
         values.insert("MDVIEW_IMAGES", "off");
         values.insert("TERM_PROGRAM", "iTerm.app");
         let env_get = |key: &str| values.get(key).map(|value| value.to_string());
         assert!(matches!(
-            detect_image_mode_from(env_get, None),
+            detect_image_mode_from(env_get),
             ImageMode::Disabled(reason) if reason.contains("disabled")
         ));
 
         values.clear();
         values.insert("MDVIEW_IMAGES", "force");
         let env_get = |key: &str| values.get(key).map(|value| value.to_string());
-        assert_eq!(detect_image_mode_from(env_get, None), ImageMode::Direct);
+        assert_eq!(detect_image_mode_from(env_get), ImageMode::Direct);
 
         values.clear();
         values.insert("TMUX", "/tmp/tmux");
         values.insert("TERM_PROGRAM", "tmux");
         values.insert("ITERM_SESSION_ID", "w0t0p0");
         let env_get = |key: &str| values.get(key).map(|value| value.to_string());
-        assert_eq!(
-            detect_image_mode_from(env_get, Some("on")),
-            ImageMode::TmuxPassthrough
-        );
-        assert_eq!(
-            detect_image_mode_from(env_get, Some("off")),
-            ImageMode::TmuxPassthrough
-        );
+        assert_eq!(detect_image_mode_from(env_get), ImageMode::TmuxPassthrough);
+        assert_eq!(detect_image_mode_from(env_get), ImageMode::TmuxPassthrough);
     }
 
     #[test]
@@ -511,5 +501,24 @@ mod tests {
         );
         assert!(resolve_image_path(md, "https://example.com/a.png").is_none());
         assert!(resolve_image_path(md, "data:image/png;base64,abc").is_none());
+    }
+
+    #[test]
+    fn rejects_images_larger_than_the_rendering_limit() {
+        let path = std::env::temp_dir().join(format!(
+            "mdview-oversized-image-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let file = File::create(&path).unwrap();
+        file.set_len(MAX_IMAGE_BYTES + 1).unwrap();
+
+        let error = build_image_slot(path.clone(), "large".to_string(), 80).unwrap_err();
+
+        let _ = fs::remove_file(path);
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert!(error.to_string().contains("image is too large"));
     }
 }

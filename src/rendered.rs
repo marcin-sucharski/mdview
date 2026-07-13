@@ -182,6 +182,14 @@ impl Style {
         }
     }
 
+    pub fn selection() -> Self {
+        Self {
+            fg: Some(TermColor::Rgb(24, 32, 42)),
+            bg: Some(TermColor::Rgb(173, 216, 255)),
+            ..Self::default()
+        }
+    }
+
     pub fn status() -> Self {
         Self {
             fg: Some(TermColor::Rgb(36, 41, 47)),
@@ -347,6 +355,10 @@ mod tests {
         assert!(matches!(
             Style::search_highlight().bg,
             Some(TermColor::Rgb(255, 235, 132))
+        ));
+        assert!(matches!(
+            Style::selection().bg,
+            Some(TermColor::Rgb(173, 216, 255))
         ));
         assert!(matches!(
             Style::status().bg,

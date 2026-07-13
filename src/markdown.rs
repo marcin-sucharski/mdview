@@ -6,6 +6,8 @@ use std::borrow::Cow;
 use std::path::Path;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
+const TAB_STOP: usize = 4;
+
 #[derive(Debug, Clone)]
 struct InlineState {
     style: Style,
@@ -546,10 +548,13 @@ impl<'a> Renderer<'a> {
                 if !self.builder.lines.is_empty() {
                     self.builder.blank_line();
                 }
-                self.builder.push_line(RenderLine::text(vec![Segment::new(
-                    centered_heading(&title, self.builder.width, 2),
-                    Style::heading_banner(),
-                )]));
+                let content_width = self.builder.width.saturating_sub(4).max(1);
+                for line in wrap_plain_text(&title, content_width) {
+                    self.builder.push_line(RenderLine::text(vec![Segment::new(
+                        centered_heading(&line, self.builder.width, 2),
+                        Style::heading_banner(),
+                    )]));
+                }
                 self.builder.blank_line();
             }
             2 => {
@@ -560,24 +565,35 @@ impl<'a> Renderer<'a> {
                     "-".repeat(self.builder.width),
                     Style::heading_rule(2),
                 )]));
-                self.builder.push_line(RenderLine::text(vec![Segment::new(
-                    padded_heading(&title, self.builder.width, 2),
-                    Style::heading_panel(2),
-                )]));
+                let content_width = self.builder.width.saturating_sub(2).max(1);
+                for line in wrap_plain_text(&title, content_width) {
+                    self.builder.push_line(RenderLine::text(vec![Segment::new(
+                        padded_heading(&line, self.builder.width, 2),
+                        Style::heading_panel(2),
+                    )]));
+                }
                 self.builder.blank_line();
             }
             3 => {
-                self.builder.push_line(RenderLine::text(vec![Segment::new(
-                    padded_heading(&title, self.builder.width, 1),
-                    Style::heading_panel(3),
-                )]));
+                let content_width = self.builder.width.saturating_sub(1).max(1);
+                for line in wrap_plain_text(&title, content_width) {
+                    self.builder.push_line(RenderLine::text(vec![Segment::new(
+                        padded_heading(&line, self.builder.width, 1),
+                        Style::heading_panel(3),
+                    )]));
+                }
                 self.builder.blank_line();
             }
             level => {
-                self.builder.push_line(RenderLine::text(vec![Segment::new(
-                    format!("{} {}", "#".repeat(level as usize), title),
-                    Style::heading(level),
-                )]));
+                for line in wrap_plain_text(
+                    &format!("{} {}", "#".repeat(level as usize), title),
+                    self.builder.width,
+                ) {
+                    self.builder.push_line(RenderLine::text(vec![Segment::new(
+                        line,
+                        Style::heading(level),
+                    )]));
+                }
                 self.builder.blank_line();
             }
         }
@@ -899,19 +915,27 @@ impl LineBuilder {
         self.ensure_line();
         for segment in segments {
             for ch in segment.text.chars() {
-                let width = UnicodeWidthChar::width(ch).unwrap_or(0);
-                if width > 0
-                    && self.col + width > self.width
-                    && self.col > self.current_prefix_width
-                {
-                    self.finish_line();
-                    self.ensure_line();
+                if ch == '\t' {
+                    let spaces = TAB_STOP - (self.col % TAB_STOP);
+                    for _ in 0..spaces {
+                        self.append_preserved_char(' ', segment);
+                    }
+                } else {
+                    self.append_preserved_char(ch, segment);
                 }
-                self.push_text(&ch.to_string(), segment.style.clone(), segment.link.clone());
-                self.col += width;
             }
         }
         self.finish_line();
+    }
+
+    fn append_preserved_char(&mut self, ch: char, segment: &Segment) {
+        let width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if width > 0 && self.col + width > self.width && self.col > self.current_prefix_width {
+            self.finish_line();
+            self.ensure_line();
+        }
+        self.push_text(&ch.to_string(), segment.style.clone(), segment.link.clone());
+        self.col += width;
     }
 
     fn append_space(&mut self, style: &Style, link: &Option<String>) {
@@ -967,6 +991,7 @@ impl LineBuilder {
             .pending_prefix
             .take()
             .unwrap_or_else(|| self.normal_prefix.clone());
+        let prefix = truncate_segments(&prefix, self.width.saturating_sub(1));
         self.current_prefix_width = line_width(&prefix);
         self.col = self.current_prefix_width;
         self.current = prefix;
@@ -1055,6 +1080,30 @@ fn line_width(segments: &[Segment]) -> usize {
         .sum()
 }
 
+fn truncate_segments(segments: &[Segment], max_width: usize) -> Vec<Segment> {
+    let mut out = Vec::new();
+    let mut width = 0usize;
+    'segments: for segment in segments {
+        let mut text = String::new();
+        for ch in segment.text.chars() {
+            let char_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+            if width + char_width > max_width {
+                break 'segments;
+            }
+            text.push(ch);
+            width += char_width;
+        }
+        if !text.is_empty() {
+            out.push(Segment {
+                text,
+                style: segment.style.clone(),
+                link: segment.link.clone(),
+            });
+        }
+    }
+    out
+}
+
 fn is_blank(line: &RenderLine) -> bool {
     matches!(&line.content, LineContent::Text(segments) if segments.iter().all(|segment| segment.text.trim().is_empty()))
 }
@@ -1127,10 +1176,11 @@ fn table_column_widths(
     }
 
     for (width, min_width) in widths.iter_mut().zip(min_widths.iter()) {
-        *width = (*width).max(*min_width);
+        *width = (*width).max(*min_width).min(available);
     }
 
-    while widths.iter().sum::<usize>() > available {
+    let mut excess = widths.iter().sum::<usize>().saturating_sub(available);
+    while excess > 0 {
         let Some((index, _)) = widths
             .iter()
             .enumerate()
@@ -1139,7 +1189,9 @@ fn table_column_widths(
         else {
             break;
         };
-        widths[index] -= 1;
+        let reduction = excess.min(widths[index].saturating_sub(min_widths[index]));
+        widths[index] -= reduction;
+        excess -= reduction;
     }
 
     widths
@@ -1374,6 +1426,22 @@ fn collapse_spaces(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+fn wrap_plain_text(text: &str, width: usize) -> Vec<String> {
+    let mut builder = LineBuilder::new(width.max(1));
+    builder.append_wrapped(text, &Style::plain(), &None);
+    builder.finish_line();
+    builder
+        .lines
+        .into_iter()
+        .filter_map(|line| match line.content {
+            LineContent::Text(segments) => {
+                Some(segments.into_iter().map(|segment| segment.text).collect())
+            }
+            LineContent::Image(_) => None,
+        })
+        .collect()
+}
+
 fn centered_heading(title: &str, width: usize, min_side_padding: usize) -> String {
     if width == 0 {
         return String::new();
@@ -1492,6 +1560,29 @@ mod tests {
     fn wraps_long_words_without_losing_text() {
         let lines = render("abcdefghijkl", 5);
         assert_eq!(lines, vec!["abcde", "fghij", "kl", ""]);
+    }
+
+    #[test]
+    fn expands_tabs_in_code_blocks_before_layout() {
+        let lines = render("```text\na\tb\n```", 12);
+        assert!(lines.iter().all(|line| !line.contains('\t')));
+        assert!(lines.iter().any(|line| line.contains("a b")));
+        assert!(lines
+            .iter()
+            .all(|line| UnicodeWidthStr::width(line.as_str()) <= 12));
+    }
+
+    #[test]
+    fn wraps_headings_without_losing_title_text() {
+        let lines = render("# alpha beta gamma delta", 12);
+        let words = lines
+            .iter()
+            .flat_map(|line| line.split_whitespace())
+            .collect::<Vec<_>>();
+        assert_eq!(words, ["alpha", "beta", "gamma", "delta"]);
+        assert!(lines
+            .iter()
+            .all(|line| UnicodeWidthStr::width(line.as_str()) <= 12));
     }
 
     #[test]
@@ -1645,6 +1736,18 @@ mod tests {
                 "line exceeded width: {line:?}"
             );
         }
+    }
+
+    #[test]
+    fn bounds_table_columns_before_shrinking_large_cells() {
+        let large_cell = "word ".repeat(20_000);
+        let source = format!("| Value |\n| --- |\n| {large_cell} |");
+        let lines = render(&source, 24);
+
+        assert!(lines.iter().any(|line| line.contains("word")));
+        assert!(lines
+            .iter()
+            .all(|line| UnicodeWidthStr::width(line.as_str()) <= 24));
     }
 
     #[test]

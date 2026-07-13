@@ -1,24 +1,38 @@
 use crate::image::{
     base64_encode, detect_image_mode, iterm2_image_sequence, tmux_passthrough, ImageMode,
+    MAX_IMAGE_BYTES,
 };
 use crate::rendered::{ImageSlot, LineContent, RenderLine, Segment, Style};
 use crate::selection::SelectionRange;
 use crossterm::cursor::{Hide, MoveTo, Show};
 use crossterm::terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{execute, queue};
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::io::{self, Stdout, Write};
+use std::path::PathBuf;
+use std::time::SystemTime;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const ENABLE_WHEEL_MOUSE: &str = "\x1b[?1000h\x1b[?1006h";
 const ENABLE_FULL_MOUSE: &str = "\x1b[?1000h\x1b[?1002h\x1b[?1006h";
 const DISABLE_MOUSE: &str = "\x1b[?1006l\x1b[?1002l\x1b[?1003l\x1b[?1015l\x1b[?1000l";
+const MAX_CACHED_IMAGES: usize = 4;
 
 pub struct Terminal {
     stdout: Stdout,
     image_mode: ImageMode,
+    image_cache: HashMap<PathBuf, CachedImage>,
     mouse_mode: MouseMode,
+}
+
+struct CachedImage {
+    len: u64,
+    modified: Option<SystemTime>,
+    width_cells: u16,
+    height_cells: u16,
+    sequence: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,6 +87,7 @@ impl Terminal {
         Ok(Self {
             stdout,
             image_mode: detect_image_mode(),
+            image_cache: HashMap::new(),
             mouse_mode,
         })
     }
@@ -98,7 +113,6 @@ impl Terminal {
         let cols = cols.max(1);
         let viewport_rows = rows.saturating_sub(1);
 
-        queue!(self.stdout, MoveTo(0, 0), Clear(ClearType::All))?;
         self.draw_body(
             lines,
             scroll_offset,
@@ -137,7 +151,12 @@ impl Terminal {
             }
 
             if skip > 0 {
-                y = y.saturating_add((line_height - skip) as u16);
+                let visible_rows =
+                    (line_height - skip).min(viewport_rows.saturating_sub(y) as usize);
+                for row in 0..visible_rows as u16 {
+                    self.draw_blank_row(y.saturating_add(row), cols as usize)?;
+                }
+                y = y.saturating_add(visible_rows as u16);
                 skip = 0;
                 if y >= viewport_rows {
                     break;
@@ -151,7 +170,6 @@ impl Terminal {
 
             match &line.content {
                 LineContent::Text(segments) => {
-                    queue!(self.stdout, MoveTo(0, y))?;
                     let absolute_row = scroll_offset + y as usize;
                     let selected_cols = selection
                         .and_then(|range| range.columns_for_row(absolute_row, cols as usize));
@@ -159,13 +177,7 @@ impl Terminal {
                         .iter()
                         .filter_map(|range| range.columns_for_row(absolute_row, cols as usize))
                         .collect::<Vec<_>>();
-                    write_segments_with_highlights(
-                        &mut self.stdout,
-                        segments,
-                        cols as usize,
-                        selected_cols,
-                        &search_cols,
-                    )?;
+                    self.draw_text_row(y, segments, cols as usize, selected_cols, &search_cols)?;
                     y += 1;
                 }
                 LineContent::Image(slot) => {
@@ -175,6 +187,41 @@ impl Terminal {
             }
         }
 
+        while y < viewport_rows {
+            self.draw_blank_row(y, cols as usize)?;
+            y += 1;
+        }
+
+        Ok(())
+    }
+
+    fn draw_text_row(
+        &mut self,
+        y: u16,
+        segments: &[Segment],
+        cols: usize,
+        selection: Option<(usize, usize)>,
+        search_highlights: &[(usize, usize)],
+    ) -> io::Result<()> {
+        queue!(self.stdout, MoveTo(0, y))?;
+        write_segments_filled(
+            &mut self.stdout,
+            segments,
+            cols,
+            selection,
+            search_highlights,
+        )
+    }
+
+    fn draw_blank_row(&mut self, y: u16, cols: usize) -> io::Result<()> {
+        queue!(self.stdout, MoveTo(0, y))?;
+        write_blank_row(&mut self.stdout, cols)
+    }
+
+    fn draw_blank_rows(&mut self, start: u16, rows: u16, cols: usize) -> io::Result<()> {
+        for row in start..start.saturating_add(rows) {
+            self.draw_blank_row(row, cols)?;
+        }
         Ok(())
     }
 
@@ -185,55 +232,119 @@ impl Terminal {
         cols: u16,
         viewport_rows: u16,
     ) -> io::Result<()> {
-        if y + slot.height_cells.max(1) > viewport_rows {
-            queue!(self.stdout, MoveTo(0, y))?;
-            return write_fallback_image(
-                &mut self.stdout,
+        let height = slot.height_cells.max(1);
+        if y.saturating_add(height) > viewport_rows {
+            return self.draw_image_fallback(
                 slot,
-                cols as usize,
+                y,
+                cols,
+                viewport_rows,
                 "not enough visible rows",
             );
         }
 
-        match &self.image_mode {
+        match self.image_mode.clone() {
             ImageMode::Direct | ImageMode::TmuxPassthrough => {
-                let data = match fs::read(&slot.path) {
-                    Ok(data) => data,
-                    Err(err) => {
-                        queue!(self.stdout, MoveTo(0, y))?;
-                        return write_fallback_image(
-                            &mut self.stdout,
-                            slot,
-                            cols as usize,
-                            &format!("failed to read: {err}"),
-                        );
-                    }
-                };
-                let name = slot
-                    .path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .unwrap_or("image");
-                let sequence =
-                    iterm2_image_sequence(&data, name, slot.width_cells, slot.height_cells);
-                let sequence = if matches!(self.image_mode, ImageMode::TmuxPassthrough) {
-                    tmux_passthrough(&sequence)
-                } else {
-                    sequence
-                };
+                if let Err(err) = self.prepare_image(slot) {
+                    return self.draw_image_fallback(
+                        slot,
+                        y,
+                        cols,
+                        viewport_rows,
+                        &format!("failed to read: {err}"),
+                    );
+                }
+
+                self.draw_blank_rows(y, height, cols as usize)?;
                 queue!(self.stdout, MoveTo(0, y))?;
+                let sequence = &self
+                    .image_cache
+                    .get(&slot.path)
+                    .ok_or_else(|| io::Error::other("prepared image missing from cache"))?
+                    .sequence;
                 write!(self.stdout, "{sequence}")?;
-                queue!(
-                    self.stdout,
-                    MoveTo(0, y.saturating_add(slot.height_cells.max(1)))
-                )?;
+                queue!(self.stdout, MoveTo(0, y.saturating_add(height)))?;
                 Ok(())
             }
             ImageMode::Disabled(reason) => {
-                queue!(self.stdout, MoveTo(0, y))?;
-                write_fallback_image(&mut self.stdout, slot, cols as usize, reason)
+                self.draw_image_fallback(slot, y, cols, viewport_rows, &reason)
             }
         }
+    }
+
+    fn prepare_image(&mut self, slot: &ImageSlot) -> io::Result<()> {
+        let metadata = fs::metadata(&slot.path)?;
+        let len = metadata.len();
+        if len > MAX_IMAGE_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("image is too large ({len} bytes; limit is {MAX_IMAGE_BYTES} bytes)"),
+            ));
+        }
+        let modified = metadata.modified().ok();
+        let cache_is_current = self.image_cache.get(&slot.path).is_some_and(|cached| {
+            cached.len == len
+                && cached.modified == modified
+                && cached.width_cells == slot.width_cells
+                && cached.height_cells == slot.height_cells
+        });
+        if cache_is_current {
+            return Ok(());
+        }
+
+        let data = fs::read(&slot.path)?;
+        if data.len() as u64 > MAX_IMAGE_BYTES {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "image is too large ({} bytes; limit is {MAX_IMAGE_BYTES} bytes)",
+                    data.len()
+                ),
+            ));
+        }
+        let name = slot
+            .path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("image");
+        let direct = iterm2_image_sequence(&data, name, slot.width_cells, slot.height_cells);
+        let sequence = if matches!(self.image_mode, ImageMode::TmuxPassthrough) {
+            tmux_passthrough(&direct)
+        } else {
+            direct
+        };
+        if !self.image_cache.contains_key(&slot.path) && self.image_cache.len() >= MAX_CACHED_IMAGES
+        {
+            self.image_cache.clear();
+        }
+        self.image_cache.insert(
+            slot.path.clone(),
+            CachedImage {
+                len,
+                modified,
+                width_cells: slot.width_cells,
+                height_cells: slot.height_cells,
+                sequence,
+            },
+        );
+        Ok(())
+    }
+
+    fn draw_image_fallback(
+        &mut self,
+        slot: &ImageSlot,
+        y: u16,
+        cols: u16,
+        viewport_rows: u16,
+        reason: &str,
+    ) -> io::Result<()> {
+        let visible_rows = slot
+            .height_cells
+            .max(1)
+            .min(viewport_rows.saturating_sub(y));
+        self.draw_blank_rows(y, visible_rows, cols as usize)?;
+        queue!(self.stdout, MoveTo(0, y))?;
+        write_fallback_image(&mut self.stdout, slot, cols as usize, reason)
     }
 
     fn draw_status(&mut self, status: &str, cols: u16, y: u16) -> io::Result<()> {
@@ -266,12 +377,8 @@ impl Drop for Terminal {
     }
 }
 
-fn mouse_mode_from_env(value: Option<&str>, in_tmux: bool) -> MouseMode {
-    let default = if in_tmux {
-        MouseMode::Disabled
-    } else {
-        MouseMode::Wheel
-    };
+fn mouse_mode_from_env(value: Option<&str>, _in_tmux: bool) -> MouseMode {
+    let default = MouseMode::Disabled;
 
     let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
         return default;
@@ -304,7 +411,7 @@ fn write_fallback_image(
         slot.path.display(),
         reason
     );
-    write_segments(out, &[Segment::new(text, style)], max_width)
+    write_segments_filled(out, &[Segment::new(text, style)], max_width, None, &[])
 }
 
 pub fn write_segments(
@@ -353,7 +460,10 @@ fn write_segments_with_highlights(
                 style.bold = true;
             }
             if selected {
-                style.reverse = true;
+                let selection = Style::selection();
+                style.fg = selection.fg;
+                style.bg = selection.bg;
+                style.reverse = false;
             }
             queue_output_segment(
                 out,
@@ -374,6 +484,47 @@ fn write_segments_with_highlights(
 
     flush_pending_segment(out, &mut pending)?;
     write!(out, "\x1b[0m")
+}
+
+fn write_segments_filled(
+    out: &mut impl Write,
+    segments: &[Segment],
+    max_width: usize,
+    selection: Option<(usize, usize)>,
+    search_highlights: &[(usize, usize)],
+) -> io::Result<()> {
+    let visible_width = segments_visible_width(segments, max_width);
+    write_segments_with_highlights(out, segments, max_width, selection, search_highlights)?;
+    write_padding(out, visible_width, max_width)
+}
+
+fn write_blank_row(out: &mut impl Write, width: usize) -> io::Result<()> {
+    write!(out, "{}", Style::plain().sgr())?;
+    write!(out, "{}", " ".repeat(width))
+}
+
+fn write_padding(out: &mut impl Write, used_width: usize, max_width: usize) -> io::Result<()> {
+    if used_width < max_width {
+        write!(out, "{}", " ".repeat(max_width - used_width))?;
+    }
+    Ok(())
+}
+
+fn segments_visible_width(segments: &[Segment], max_width: usize) -> usize {
+    let mut width = 0usize;
+    'segments: for segment in segments {
+        if width >= max_width {
+            break;
+        }
+        for ch in visible_safe(&segment.text).chars() {
+            let char_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+            if char_width > 0 && width + char_width > max_width {
+                break 'segments;
+            }
+            width += char_width;
+        }
+    }
+    width
 }
 
 fn column_in_ranges(col: usize, width: usize, ranges: &[(usize, usize)]) -> bool {
@@ -446,13 +597,7 @@ pub fn fit_to_width(text: &str, max_width: usize) -> String {
 
 fn visible_safe(text: &str) -> String {
     text.chars()
-        .map(|ch| {
-            if ch == '\t' || !ch.is_control() {
-                ch
-            } else {
-                ' '
-            }
-        })
+        .map(|ch| if !ch.is_control() { ch } else { ' ' })
         .collect()
 }
 
@@ -532,7 +677,7 @@ mod tests {
     }
 
     #[test]
-    fn writes_selected_text_with_reverse_video() {
+    fn writes_selected_text_with_light_theme_background() {
         let mut out = Vec::new();
         write_segments_with_highlights(
             &mut out,
@@ -544,7 +689,7 @@ mod tests {
         .unwrap();
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("\x1b[0ma\x1b[0m"));
-        assert!(text.contains("\x1b[0;7mbcd\x1b[0m"));
+        assert!(text.contains("\x1b[0;38;2;24;32;42;48;2;173;216;255mbcd\x1b[0m"));
         assert!(text.contains("\x1b[0mef\x1b[0m"));
     }
 
@@ -561,6 +706,23 @@ mod tests {
         .unwrap();
         let text = String::from_utf8(out).unwrap();
         assert!(text.contains("\x1b[0;1;38;2;36;41;47;48;2;255;235;132mcde\x1b[0m"));
+    }
+
+    #[test]
+    fn fills_rows_without_full_screen_clear() {
+        let mut out = Vec::new();
+        write_segments_filled(
+            &mut out,
+            &[Segment::new("a界", Style::plain())],
+            4,
+            None,
+            &[],
+        )
+        .unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert!(text.ends_with(' '));
+        assert!(!text.contains("\x1b[2J"));
+        assert!(!text.contains("\x1b[3J"));
     }
 
     #[test]
@@ -597,11 +759,14 @@ mod tests {
     }
 
     #[test]
-    fn mouse_mode_defaults_to_copy_friendly_tmux_behavior() {
+    fn mouse_mode_defaults_to_copy_friendly_behavior_everywhere() {
         assert_eq!(mouse_mode_from_env(None, true), MouseMode::Disabled);
-        assert_eq!(mouse_mode_from_env(None, false), MouseMode::Wheel);
+        assert_eq!(mouse_mode_from_env(None, false), MouseMode::Disabled);
         assert_eq!(mouse_mode_from_env(Some("auto"), true), MouseMode::Disabled);
-        assert_eq!(mouse_mode_from_env(Some("auto"), false), MouseMode::Wheel);
+        assert_eq!(
+            mouse_mode_from_env(Some("auto"), false),
+            MouseMode::Disabled
+        );
     }
 
     #[test]

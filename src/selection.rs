@@ -109,46 +109,46 @@ pub fn selected_text(
     max_width: usize,
 ) -> Option<String> {
     let mut rows = Vec::new();
-    for row in range.start.row..=range.end.row {
-        let Some((start_col, end_col)) = range.columns_for_row(row, max_width) else {
-            continue;
-        };
-        let text = rendered_row_text(lines, row);
-        rows.push(
-            slice_cells(&text, start_col, end_col)
-                .trim_end()
-                .to_string(),
-        );
+    let mut row = 0usize;
+    for line in lines {
+        if row > range.end.row {
+            break;
+        }
+        match &line.content {
+            LineContent::Text(segments) => {
+                push_selected_row(&mut rows, &segments_text(segments), row, range, max_width);
+                row += 1;
+            }
+            LineContent::Image(ImageSlot { alt, .. }) => {
+                let height = line.height();
+                for image_row in 0..height {
+                    let text = if image_row == 0 {
+                        format!("[image: {alt}]")
+                    } else {
+                        String::new()
+                    };
+                    push_selected_row(&mut rows, &text, row + image_row, range, max_width);
+                }
+                row += height;
+            }
+        }
     }
 
     let text = rows.join("\n");
     (!text.is_empty()).then_some(text)
 }
 
-fn rendered_row_text(lines: &[RenderLine], target_row: usize) -> String {
-    let mut row = 0usize;
-    for line in lines {
-        match &line.content {
-            LineContent::Text(segments) => {
-                if row == target_row {
-                    return segments_text(segments);
-                }
-                row += 1;
-            }
-            LineContent::Image(ImageSlot { alt, .. }) => {
-                let height = line.height();
-                if target_row < row + height {
-                    return if target_row == row {
-                        format!("[image: {alt}]")
-                    } else {
-                        String::new()
-                    };
-                }
-                row += height;
-            }
-        }
-    }
-    String::new()
+fn push_selected_row(
+    rows: &mut Vec<String>,
+    text: &str,
+    row: usize,
+    range: SelectionRange,
+    max_width: usize,
+) {
+    let Some((start_col, end_col)) = range.columns_for_row(row, max_width) else {
+        return;
+    };
+    rows.push(slice_cells(text, start_col, end_col).trim_end().to_string());
 }
 
 fn segments_text(segments: &[Segment]) -> String {

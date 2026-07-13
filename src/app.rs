@@ -89,9 +89,11 @@ fn run_file(path: PathBuf) -> Result<(), AppError> {
         if event::poll(POLL_TICK)? {
             match event::read()? {
                 TermEvent::Key(key) => {
-                    if state.search_input_active() {
+                    if is_control_c(key) {
+                        state.copy_selection(&mut terminal, viewport_cols as usize)?;
+                        draw_needed = true;
+                    } else if state.search_input_active() {
                         match state.handle_search_input(key, viewport_rows as usize) {
-                            SearchKeyResult::Quit => break,
                             SearchKeyResult::Redraw => draw_needed = true,
                             SearchKeyResult::None => {}
                         }
@@ -272,7 +274,6 @@ struct SearchState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SearchKeyResult {
-    Quit,
     Redraw,
     None,
 }
@@ -402,7 +403,6 @@ impl ViewerState {
 
     fn handle_search_input(&mut self, key: KeyEvent, viewport_rows: usize) -> SearchKeyResult {
         match (key.code, key.modifiers) {
-            (KeyCode::Char('c'), KeyModifiers::CONTROL) => SearchKeyResult::Quit,
             (KeyCode::Esc, _) => {
                 self.search.input = None;
                 self.last_status = Some("search canceled".to_string());
@@ -527,7 +527,7 @@ pub enum InputAction {
 
 pub fn input_action(key: KeyEvent) -> InputAction {
     match (key.code, key.modifiers) {
-        (KeyCode::Char('c'), KeyModifiers::CONTROL) => InputAction::Quit,
+        (KeyCode::Char('c'), KeyModifiers::CONTROL) => InputAction::Copy,
         (KeyCode::Char('q'), KeyModifiers::NONE)
         | (KeyCode::Esc, _)
         | (KeyCode::Char('Q'), KeyModifiers::SHIFT) => InputAction::Quit,
@@ -549,6 +549,13 @@ pub fn input_action(key: KeyEvent) -> InputAction {
         | (KeyCode::Enter, _) => InputAction::Copy,
         _ => InputAction::None,
     }
+}
+
+fn is_control_c(key: KeyEvent) -> bool {
+    matches!(
+        (key.code, key.modifiers),
+        (KeyCode::Char('c'), KeyModifiers::CONTROL)
+    )
 }
 
 #[cfg(test)]
@@ -574,7 +581,7 @@ mod tests {
         );
         assert_eq!(
             input_action(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
-            InputAction::Quit
+            InputAction::Copy
         );
         assert_eq!(
             input_action(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)),
@@ -680,6 +687,18 @@ mod tests {
             state.handle_search_input(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE), 10);
 
         assert_eq!(state.status(10, None), "/a");
+    }
+
+    #[test]
+    fn control_c_is_always_reserved_for_copying() {
+        assert!(is_control_c(KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL
+        )));
+        assert!(!is_control_c(KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::NONE
+        )));
     }
 
     fn state_with_lines(lines: &[&str]) -> ViewerState {

@@ -34,15 +34,15 @@ Inside the viewer:
 - `g` and `G` jump to the top or bottom
 - `/` opens search, `Enter` searches, and empty `Enter` clears search
 - `n` moves to the next search match and `p` moves to the previous one
-- `q`, `Esc`, or `Ctrl-C` quit
+- `q` or `Esc` quit
 
-Mouse reporting is disabled by default inside tmux so normal tmux/iTerm2 text
-selection works. Outside tmux, mouse wheel scrolling is enabled by default.
-Set `MDVIEW_MOUSE=wheel` to force wheel scrolling, `MDVIEW_MOUSE=on` to enable
+Mouse reporting is disabled by default so normal terminal text selection and
+local copy shortcuts keep working, including over SSH. Set `MDVIEW_MOUSE=wheel`
+to enable wheel scrolling, or `MDVIEW_MOUSE=on` to enable
 wheel scrolling plus in-app drag selection, or `MDVIEW_MOUSE=off` to disable
 mouse reporting. With `MDVIEW_MOUSE=on`, drag with the left mouse button to
-select text, then press `y`, `c`, `Enter`, or right click to copy through OSC
-52.
+select text, then press `Ctrl-C`, `y`, `c`, `Enter`, or right click to copy
+through OSC 52. `Ctrl-C` is reserved for copying rather than quitting.
 
 ## iTerm2 Images Through tmux
 
