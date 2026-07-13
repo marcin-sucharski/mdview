@@ -237,7 +237,9 @@ printf '# After atomic rename\n\nrenamed text\n' >"$TMP_WRITE"
 mv "$TMP_WRITE" "$WATCH_FILE"
 wait_for_text "After atomic rename" "reload after atomic rename"
 rm "$WATCH_FILE"
-sleep 0.5
+wait_for_text "file deleted" "deleted watched file is shown in the UI"
+tmuxc resize-window -t "$SESSION" -x 62 -y 19
+wait_for_text "file deleted" "deleted watched file remains visible after resize"
 printf '# After delete recreate\n\nrecreated text\n' >"$WATCH_FILE"
 wait_for_text "After delete recreate" "reload after delete and recreate" 150
 stop_viewer

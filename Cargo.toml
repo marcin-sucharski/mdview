@@ -1,6 +1,6 @@
 [package]
 name = "mdview"
-version = "0.1.11"
+version = "0.1.12"
 edition = "2021"
 description = "A minimal terminal Markdown previewer for Linux"
 repository = "https://github.com/marcin-sucharski/mdview"
@@ -8,5 +8,12 @@ repository = "https://github.com/marcin-sucharski/mdview"
 [dependencies]
 crossterm = { version = "0.29.0", default-features = false, features = ["events"] }
 notify = { version = "8.2.0", default-features = false }
-pulldown-cmark = { version = "0.13.4", default-features = false }
-unicode-width = { version = "0.2.2", default-features = false }
+pulldown-cmark = { version = "0.13.4", default-features = false, features = ["html"] }
+
+[[bin]]
+name = "mdview"
+path = "src/main.rs"
+
+[[bin]]
+name = "mdview-web"
+path = "src/bin/mdview-web.rs"

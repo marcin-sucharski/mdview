@@ -1,6 +1,6 @@
 use crate::rendered::{ImageSlot, LineContent, RenderLine, Segment};
 use crate::selection::{SelectionPoint, SelectionRange};
-use unicode_width::UnicodeWidthChar;
+use crate::width::{char_width, width_chars};
 
 pub fn find_matches(lines: &[RenderLine], query: &str) -> Vec<SelectionRange> {
     let query = fold_case(query);
@@ -103,19 +103,41 @@ fn find_line_matches(row: usize, text: &str, query: &str) -> Vec<SelectionRange>
 }
 
 fn char_cells(text: &str) -> Vec<CharCell> {
-    let mut cells = Vec::new();
+    let mut cells: Vec<CharCell> = Vec::new();
     let mut col = 0usize;
-    for ch in text.chars() {
-        let width = UnicodeWidthChar::width(ch).unwrap_or(0);
-        let start_col = col;
-        if width > 0 {
-            col += width;
+    let mut cluster_start = 0usize;
+    let mut regional_run = 0usize;
+    for (ch, width) in width_chars(text) {
+        let scalar_width = char_width(ch).unwrap_or(0);
+        let regional_indicator = matches!(ch as u32, 0x1f1e6..=0x1f1ff);
+        let continues_cluster = !cells.is_empty()
+            && (width == 0 || scalar_width == 0 || (regional_indicator && regional_run % 2 == 1));
+
+        if !continues_cluster {
+            cluster_start = cells.len();
         }
+        let start_col = if continues_cluster {
+            cells[cluster_start].start_col
+        } else {
+            col
+        };
+        col = col.saturating_add(width);
+        if continues_cluster {
+            for cell in &mut cells[cluster_start..] {
+                cell.end_col = col;
+            }
+        }
+
         cells.push(CharCell {
             folded: fold_char(ch),
             start_col,
-            end_col: col.max(start_col.saturating_add(width)),
+            end_col: col,
         });
+        regional_run = if regional_indicator {
+            regional_run.saturating_add(1)
+        } else {
+            0
+        };
     }
     cells
 }
@@ -185,5 +207,22 @@ mod tests {
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].start, SelectionPoint::new(0, 1));
         assert_eq!(matches[0].end, SelectionPoint::new(0, 4));
+    }
+
+    #[test]
+    fn expands_sequence_character_matches_to_the_displayed_cluster() {
+        let lines = vec![plain_line("👩‍💻 ❤️‍🔥 🇵🇱🇺")];
+
+        let laptop = find_matches(&lines, "💻");
+        assert_eq!(laptop[0].start, SelectionPoint::new(0, 0));
+        assert_eq!(laptop[0].end, SelectionPoint::new(0, 2));
+
+        let fire = find_matches(&lines, "🔥");
+        assert_eq!(fire[0].start, SelectionPoint::new(0, 3));
+        assert_eq!(fire[0].end, SelectionPoint::new(0, 5));
+
+        let second_flag = find_matches(&lines, "🇺");
+        assert_eq!(second_flag[0].start, SelectionPoint::new(0, 8));
+        assert_eq!(second_flag[0].end, SelectionPoint::new(0, 9));
     }
 }

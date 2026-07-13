@@ -1,5 +1,5 @@
 use crate::rendered::{ImageSlot, LineContent, RenderLine, Segment};
-use unicode_width::UnicodeWidthChar;
+use crate::width::width_chars;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct SelectionPoint {
@@ -166,8 +166,7 @@ fn slice_cells(text: &str, start_col: usize, end_col: usize) -> String {
     let mut out = String::new();
     let mut col = 0usize;
     let mut last_selected = false;
-    for ch in text.chars() {
-        let width = UnicodeWidthChar::width(ch).unwrap_or(0);
+    for (ch, width) in width_chars(text) {
         let selected = if width == 0 {
             last_selected
         } else {

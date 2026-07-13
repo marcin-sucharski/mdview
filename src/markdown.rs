@@ -1,10 +1,10 @@
 use crate::image::{build_image_slot, resolve_image_path};
 use crate::rendered::{plain_line, ImageSlot, LineContent, RenderLine, Segment, Style};
 use crate::syntax::highlight_code;
+use crate::width::{str_width, width_chars};
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use std::borrow::Cow;
 use std::path::Path;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const TAB_STOP: usize = 4;
 
@@ -802,7 +802,7 @@ impl<'a> Renderer<'a> {
         } else {
             "- ".to_string()
         };
-        let marker_width = UnicodeWidthStr::width(marker.as_str());
+        let marker_width = str_width(marker.as_str());
         let mut prefix_style = Style::plain();
         prefix_style.dim = true;
         let first = vec![Segment::new(
@@ -914,22 +914,21 @@ impl LineBuilder {
     fn append_preserved_line(&mut self, segments: &[Segment]) {
         self.ensure_line();
         for segment in segments {
-            for ch in segment.text.chars() {
+            for (ch, width) in width_chars(&segment.text) {
                 if ch == '\t' {
                     let spaces = TAB_STOP - (self.col % TAB_STOP);
                     for _ in 0..spaces {
-                        self.append_preserved_char(' ', segment);
+                        self.append_preserved_char(' ', 1, segment);
                     }
                 } else {
-                    self.append_preserved_char(ch, segment);
+                    self.append_preserved_char(ch, width, segment);
                 }
             }
         }
         self.finish_line();
     }
 
-    fn append_preserved_char(&mut self, ch: char, segment: &Segment) {
-        let width = UnicodeWidthChar::width(ch).unwrap_or(0);
+    fn append_preserved_char(&mut self, ch: char, width: usize, segment: &Segment) {
         if width > 0 && self.col + width > self.width && self.col > self.current_prefix_width {
             self.finish_line();
             self.ensure_line();
@@ -952,7 +951,7 @@ impl LineBuilder {
     }
 
     fn append_word(&mut self, word: &str, style: &Style, link: &Option<String>) {
-        let word_width = UnicodeWidthStr::width(word);
+        let word_width = str_width(word);
         self.ensure_line();
 
         if word_width > 0
@@ -969,17 +968,13 @@ impl LineBuilder {
             return;
         }
 
-        for ch in word.chars() {
-            let char_width = UnicodeWidthChar::width(ch).unwrap_or(0);
-            if char_width > 0
-                && self.col + char_width > self.width
-                && self.col > self.current_prefix_width
-            {
+        for (ch, width) in width_chars(word) {
+            if width > 0 && self.col + width > self.width && self.col > self.current_prefix_width {
                 self.finish_line();
                 self.ensure_line();
             }
             self.push_text(&ch.to_string(), style.clone(), link.clone());
-            self.col += char_width;
+            self.col += width;
         }
     }
 
@@ -1076,7 +1071,7 @@ fn tokenize_wrapped(text: &str) -> Vec<WrapToken<'_>> {
 fn line_width(segments: &[Segment]) -> usize {
     segments
         .iter()
-        .map(|segment| UnicodeWidthStr::width(segment.text.as_str()))
+        .map(|segment| str_width(segment.text.as_str()))
         .sum()
 }
 
@@ -1085,8 +1080,7 @@ fn truncate_segments(segments: &[Segment], max_width: usize) -> Vec<Segment> {
     let mut width = 0usize;
     'segments: for segment in segments {
         let mut text = String::new();
-        for ch in segment.text.chars() {
-            let char_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        for (ch, char_width) in width_chars(&segment.text) {
             if width + char_width > max_width {
                 break 'segments;
             }
@@ -1207,7 +1201,7 @@ fn cell_preferred_width(cell: &TableCell) -> usize {
     cell.segments
         .iter()
         .flat_map(|segment| segment.text.split_whitespace())
-        .map(UnicodeWidthStr::width)
+        .map(str_width)
         .max()
         .unwrap_or(0)
         .max(line_width(&cell.segments))
@@ -1216,8 +1210,7 @@ fn cell_preferred_width(cell: &TableCell) -> usize {
 fn widest_char_width(cell: &TableCell) -> usize {
     cell.segments
         .iter()
-        .flat_map(|segment| segment.text.chars())
-        .filter_map(UnicodeWidthChar::width)
+        .flat_map(|segment| width_chars(&segment.text).map(|(_, width)| width))
         .max()
         .unwrap_or(1)
         .max(1)
@@ -1448,7 +1441,7 @@ fn centered_heading(title: &str, width: usize, min_side_padding: usize) -> Strin
     }
     let inner_width = width.saturating_sub(min_side_padding.saturating_mul(2));
     let fitted = fit_to_width(title, inner_width.max(1));
-    let fitted_width = UnicodeWidthStr::width(fitted.as_str());
+    let fitted_width = str_width(fitted.as_str());
     let remaining = width.saturating_sub(fitted_width);
     let left = (remaining / 2).max(min_side_padding.min(width));
     let left = left.min(width.saturating_sub(fitted_width));
@@ -1462,7 +1455,7 @@ fn padded_heading(title: &str, width: usize, left_padding: usize) -> String {
     }
     let left = left_padding.min(width);
     let fitted = fit_to_width(title, width.saturating_sub(left).max(1));
-    let fitted_width = UnicodeWidthStr::width(fitted.as_str());
+    let fitted_width = str_width(fitted.as_str());
     let right = width.saturating_sub(left + fitted_width);
     format!("{}{}{}", " ".repeat(left), fitted, " ".repeat(right))
 }
@@ -1470,8 +1463,7 @@ fn padded_heading(title: &str, width: usize, left_padding: usize) -> String {
 fn fit_to_width(text: &str, width: usize) -> String {
     let mut out = String::new();
     let mut used = 0usize;
-    for ch in text.chars() {
-        let char_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+    for (ch, char_width) in width_chars(text) {
         if used + char_width > width {
             break;
         }
@@ -1524,7 +1516,7 @@ mod tests {
     fn renders_heading_and_paragraph() {
         let lines = render("# Title\n\nHello **world**.", 80);
         assert_eq!(lines[0].trim(), "Title");
-        assert_eq!(UnicodeWidthStr::width(lines[0].as_str()), 80);
+        assert_eq!(str_width(lines[0].as_str()), 80);
         assert_eq!(lines[2], "Hello world.");
     }
 
@@ -1567,9 +1559,7 @@ mod tests {
         let lines = render("```text\na\tb\n```", 12);
         assert!(lines.iter().all(|line| !line.contains('\t')));
         assert!(lines.iter().any(|line| line.contains("a b")));
-        assert!(lines
-            .iter()
-            .all(|line| UnicodeWidthStr::width(line.as_str()) <= 12));
+        assert!(lines.iter().all(|line| str_width(line.as_str()) <= 12));
     }
 
     #[test]
@@ -1580,9 +1570,7 @@ mod tests {
             .flat_map(|line| line.split_whitespace())
             .collect::<Vec<_>>();
         assert_eq!(words, ["alpha", "beta", "gamma", "delta"]);
-        assert!(lines
-            .iter()
-            .all(|line| UnicodeWidthStr::width(line.as_str()) <= 12));
+        assert!(lines.iter().all(|line| str_width(line.as_str()) <= 12));
     }
 
     #[test]
@@ -1732,7 +1720,7 @@ mod tests {
         assert!(lines.iter().any(|line| line.contains("epsilon")));
         for line in lines.iter().filter(|line| !line.is_empty()) {
             assert!(
-                UnicodeWidthStr::width(line.as_str()) <= 24,
+                str_width(line.as_str()) <= 24,
                 "line exceeded width: {line:?}"
             );
         }
@@ -1745,9 +1733,7 @@ mod tests {
         let lines = render(&source, 24);
 
         assert!(lines.iter().any(|line| line.contains("word")));
-        assert!(lines
-            .iter()
-            .all(|line| UnicodeWidthStr::width(line.as_str()) <= 24));
+        assert!(lines.iter().all(|line| str_width(line.as_str()) <= 24));
     }
 
     #[test]

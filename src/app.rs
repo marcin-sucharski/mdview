@@ -257,6 +257,7 @@ fn run_file(path: PathBuf) -> Result<(), AppError> {
 struct ViewerState {
     path: PathBuf,
     source: String,
+    deleted: bool,
     lines: Vec<RenderLine>,
     scroll: usize,
     last_status: Option<String>,
@@ -285,6 +286,7 @@ impl ViewerState {
         Ok(Self {
             path,
             source,
+            deleted: false,
             lines,
             scroll: 0,
             last_status: Some("loaded".to_string()),
@@ -297,8 +299,16 @@ impl ViewerState {
         match load_source(&self.path) {
             Ok(source) => {
                 self.source = source;
+                self.deleted = false;
                 self.render(width);
                 self.last_status = Some("reloaded".to_string());
+            }
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                self.source.clear();
+                self.deleted = true;
+                self.render(width);
+                self.scroll = 0;
+                self.last_status = Some("file deleted; waiting for it to reappear".to_string());
             }
             Err(err) => {
                 self.last_status = Some(format!("reload error: {err}"));
@@ -313,9 +323,13 @@ impl ViewerState {
     }
 
     fn render(&mut self, width: u16) {
-        self.lines = render_markdown(&self.path, &self.source, width);
-        if self.lines.is_empty() {
-            self.lines = vec![plain_line("(empty)")];
+        if self.deleted {
+            self.lines = vec![plain_line(format!("file deleted: {}", self.path.display()))];
+        } else {
+            self.lines = render_markdown(&self.path, &self.source, width);
+            if self.lines.is_empty() {
+                self.lines = vec![plain_line("(empty)")];
+            }
         }
         self.selection.clear();
         self.refresh_search_matches();
@@ -624,6 +638,19 @@ mod tests {
         state.reload(80);
         assert!(crate::markdown::flatten_text(&state.lines)[0].contains("New"));
 
+        fs::remove_file(&path).unwrap();
+        state.reload(80);
+        assert!(crate::markdown::flatten_text(&state.lines)[0].contains("file deleted"));
+        assert!(state.status(20, None).contains("file deleted"));
+
+        state.render(36);
+        assert!(crate::markdown::flatten_text(&state.lines)[0].contains("file deleted"));
+        assert!(state.status(20, None).contains("file deleted"));
+
+        fs::write(&path, "# Recreated").unwrap();
+        state.reload(80);
+        assert!(crate::markdown::flatten_text(&state.lines)[0].contains("Recreated"));
+
         let _ = fs::remove_file(path);
         let _ = fs::remove_dir(dir);
     }
@@ -705,6 +732,7 @@ mod tests {
         ViewerState {
             path: PathBuf::from("/tmp/doc.md"),
             source: lines.join("\n"),
+            deleted: false,
             lines: lines.iter().map(|line| plain_line(*line)).collect(),
             scroll: 0,
             last_status: Some("loaded".to_string()),

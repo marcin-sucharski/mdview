@@ -1,0 +1,829 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>mdview-web</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --canvas: #f3f6f8;
+      --paper: #ffffff;
+      --ink: #17212b;
+      --ink-soft: #344054;
+      --muted: #667085;
+      --line: #d6dde5;
+      --line-soft: #e8edf2;
+      --blue: #075f8f;
+      --blue-strong: #064b72;
+      --blue-soft: #e5f4fb;
+      --green: #16704a;
+      --green-soft: #eaf7f0;
+      --amber: #945c08;
+      --amber-soft: #fff8e7;
+      --red: #b42318;
+      --red-soft: #fef3f2;
+      --code: #f4f7f9;
+      --code-line: #d7e0e7;
+      --sidebar-width: 288px;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
+    body { margin: 0; background: var(--canvas); color: var(--ink); overflow: hidden; text-rendering: optimizeLegibility; }
+    button, input { font: inherit; }
+    ::selection { color: #102a3a; background: #bde8fb; }
+    .shell {
+      display: grid;
+      grid-template-columns: var(--sidebar-width) minmax(0, 1fr);
+      width: 100%;
+      height: 100vh;
+      height: 100dvh;
+      min-height: 0;
+      overflow: hidden;
+    }
+    .sidebar {
+      min-width: 0;
+      min-height: 0;
+      background: #fbfcfd;
+      border-right: 1px solid var(--line);
+      display: flex;
+      flex-direction: column;
+    }
+    .brand { padding: 18px 18px 13px; border-bottom: 1px solid var(--line-soft); }
+    .brand-line { display: flex; align-items: center; gap: 10px; }
+    .logo {
+      display: grid; place-items: center; width: 30px; height: 30px;
+      border-radius: 8px; background: var(--blue); color: white;
+      font: 700 12px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .brand h1 { margin: 0; font-size: 15px; letter-spacing: -.01em; }
+    .root { margin: 6px 0 0 40px; color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .tree-tools { padding: 12px; }
+    .filter {
+      width: 100%; border: 1px solid var(--line); border-radius: 7px;
+      background: white; padding: 7px 10px; color: var(--ink); outline: none;
+    }
+    .filter:focus { border-color: #38bdf8; box-shadow: 0 0 0 3px #e0f2fe; }
+    .tree {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: auto;
+      overscroll-behavior: contain;
+      scrollbar-gutter: stable;
+      padding: 0 8px 16px;
+      font-size: 13px;
+    }
+    .tree-empty { padding: 14px 10px; color: var(--muted); line-height: 1.5; }
+    .tree details { margin: 1px 0; }
+    .tree summary {
+      list-style: none; cursor: pointer; border-radius: 5px; padding: 5px 7px;
+      color: #475467; font-weight: 600; user-select: none;
+    }
+    .tree summary::-webkit-details-marker { display: none; }
+    .tree summary::before { content: "›"; display: inline-block; width: 15px; transition: transform .12s ease; }
+    .tree details[open] > summary::before { transform: rotate(90deg); }
+    .tree-children { margin-left: 12px; padding-left: 4px; border-left: 1px solid var(--line-soft); }
+    .tree-file {
+      display: block; width: 100%; border: 0; background: transparent; text-align: left;
+      color: #344054; border-radius: 5px; padding: 5px 7px 5px 22px; cursor: pointer;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .tree-file::before { content: "#"; color: #98a2b3; margin-right: 7px; font: 600 11px ui-monospace, monospace; }
+    .tree-file:hover { background: #eef2f6; }
+    .tree-file.active { color: var(--blue); background: var(--blue-soft); font-weight: 600; }
+    .main {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      overflow: hidden;
+      background: var(--paper);
+    }
+    .chrome { min-width: 0; min-height: 0; background: #fbfcfd; border-bottom: 1px solid var(--line); }
+    .tabs { min-height: 43px; display: flex; align-items: end; overflow-x: auto; padding: 6px 8px 0; gap: 3px; }
+    .tab {
+      flex: 0 0 auto; max-width: 220px; height: 36px; display: flex; align-items: center;
+      border: 1px solid transparent; border-bottom: 0; border-radius: 7px 7px 0 0;
+      color: #475467; background: transparent;
+    }
+    .tab:hover { background: #f2f4f7; }
+    .tab.active { color: var(--ink); background: white; border-color: var(--line); }
+    .tab.changed:not(.active) {
+      color: #7a4d00;
+      background: #fff7df;
+      border-color: #ead49b;
+    }
+    .tab.changed:not(.active):hover { background: #fff0c2; }
+    .tab-select { min-width: 0; flex: 1; border: 0; background: transparent; padding: 0 5px 0 11px; cursor: pointer; color: inherit; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .tab-close { width: 28px; align-self: stretch; border: 0; background: transparent; color: #98a2b3; cursor: pointer; border-radius: 5px; }
+    .tab-close:hover { color: var(--ink); background: #e9edf2; }
+    .tab.changed .tab-select::before { content: "●"; color: #d28b12; font-size: 8px; margin-right: 7px; vertical-align: 2px; }
+    .tab.deleted .tab-select::before { content: "●"; color: var(--red); font-size: 8px; margin-right: 7px; vertical-align: 2px; }
+    .statusbar { height: 29px; padding: 0 14px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-top: 1px solid var(--line-soft); font-size: 11px; color: var(--muted); }
+    .current-path { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .connection { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; }
+    .connection::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: #98a2b3; }
+    .connection.connected::before { background: #12b76a; box-shadow: 0 0 0 3px #d1fadf; }
+    .connection.disconnected::before { background: var(--red); }
+    .viewport {
+      min-width: 0;
+      min-height: 0;
+      overflow-x: hidden;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      scrollbar-gutter: stable;
+      position: relative;
+      background: var(--paper);
+      outline: none;
+    }
+    .viewport:focus-visible { box-shadow: inset 0 0 0 2px #38bdf8; }
+    .preview {
+      width: 100%;
+      min-width: 0;
+      margin: 0;
+      padding: clamp(30px, 4.5vw, 68px) clamp(24px, 5vw, 80px) 112px;
+      color: var(--ink-soft);
+      font-size: 16px;
+      line-height: 1.72;
+      overflow-wrap: anywhere;
+    }
+    .preview > :first-child { margin-top: 0; }
+    .preview > :last-child { margin-bottom: 0; }
+    .preview h1, .preview h2, .preview h3, .preview h4, .preview h5, .preview h6 {
+      color: var(--ink);
+      line-height: 1.22;
+      letter-spacing: -.025em;
+      scroll-margin-top: 24px;
+      text-wrap: balance;
+    }
+    .preview h1 {
+      margin: 0 0 34px;
+      padding: 0 0 18px;
+      font-size: clamp(2rem, 3vw, 2.75rem);
+      font-weight: 760;
+    }
+    .preview h1::after {
+      content: "";
+      display: block;
+      width: 64px;
+      height: 4px;
+      margin-top: 18px;
+      border-radius: 99px;
+      background: var(--blue);
+    }
+    .preview h2 {
+      margin: 48px 0 20px;
+      padding: 0 0 10px;
+      border-bottom: 1px solid var(--line);
+      font-size: clamp(1.5rem, 2vw, 1.85rem);
+      font-weight: 720;
+    }
+    .preview h3 {
+      margin: 38px 0 16px;
+      padding-left: 12px;
+      border-left: 4px solid #e0a12b;
+      font-size: 1.3rem;
+      font-weight: 700;
+    }
+    .preview h4 { font-size: 1.1rem; }
+    .preview h4, .preview h5, .preview h6 { margin: 30px 0 12px; font-weight: 700; }
+    .preview p { margin: 0 0 20px; }
+    .preview strong { color: #263746; font-weight: 720; }
+    .preview a { color: #0876b2; font-weight: 550; text-decoration-thickness: 1px; text-underline-offset: 3px; }
+    .preview a:hover { color: var(--blue-strong); text-decoration-thickness: 2px; }
+    .preview a:focus-visible { outline: 2px solid #38bdf8; outline-offset: 3px; border-radius: 2px; }
+    .preview blockquote {
+      margin: 26px 0;
+      padding: 16px 20px;
+      color: #41586a;
+      border: 1px solid #cce6f2;
+      border-left: 5px solid #2d91bd;
+      border-radius: 0 8px 8px 0;
+      background: #f3fafe;
+    }
+    .preview blockquote > :last-child { margin-bottom: 0; }
+    .preview ul, .preview ol { margin: 0 0 20px; padding-left: 1.8em; }
+    .preview li { padding-left: .25em; }
+    .preview li + li { margin-top: 7px; }
+    .preview li::marker { color: var(--blue); font-weight: 700; }
+    .preview hr { height: 1px; border: 0; background: linear-gradient(90deg, transparent, var(--line) 8%, var(--line) 92%, transparent); margin: 42px 0; }
+    .preview code { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; font-size: .875em; }
+    .preview :not(pre) > code { padding: .2em .42em; border: 1px solid #e0e6eb; border-radius: 5px; color: #7a4512; background: var(--code); }
+    .preview pre {
+      position: relative;
+      max-width: 100%;
+      overflow: auto;
+      margin: 26px 0;
+      padding: 20px 22px;
+      border: 1px solid var(--code-line);
+      border-radius: 9px;
+      background: var(--code);
+      box-shadow: inset 3px 0 0 #9cc9dc;
+      line-height: 1.56;
+      tab-size: 4;
+      scrollbar-gutter: stable;
+    }
+    .preview pre.has-language { padding-top: 43px; }
+    .preview pre.has-language::before {
+      content: attr(data-language);
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 27px;
+      padding: 5px 12px;
+      border-bottom: 1px solid var(--code-line);
+      color: #607386;
+      background: #eaf0f4;
+      font: 650 11px/16px ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: .055em;
+      text-transform: uppercase;
+    }
+    .preview pre code { display: block; min-width: max-content; color: #242f39; background: transparent; }
+    .tok-keyword { color: #5b4b8a; font-weight: 700; }
+    .tok-key { color: #057085; font-weight: 600; }
+    .tok-string { color: #116329; }
+    .tok-number { color: #0969da; }
+    .tok-literal { color: #953800; font-weight: 600; }
+    .tok-punctuation { color: #57606a; }
+    .tok-comment { color: #6a737d; font-style: italic; }
+    .table-scroll {
+      width: 100%;
+      max-width: 100%;
+      margin: 28px 0;
+      overflow-x: auto;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      box-shadow: 0 1px 2px rgb(16 24 40 / 5%);
+      scrollbar-gutter: stable;
+    }
+    .table-scroll:focus-visible { outline: 2px solid #38bdf8; outline-offset: 3px; }
+    .preview table { width: 100%; min-width: max-content; border: 0; border-collapse: collapse; margin: 0; }
+    .preview th, .preview td { min-width: 110px; padding: 11px 15px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    .preview th:last-child, .preview td:last-child { border-right: 0; }
+    .preview tr:last-child td { border-bottom: 0; }
+    .preview th { color: #203646; background: var(--green-soft); font-weight: 720; }
+    .preview tbody tr:nth-child(even) td { background: #f8fafb; }
+    .preview tbody tr:hover td { background: #f0f7fa; }
+    .preview img {
+      display: block;
+      max-width: 100%;
+      height: auto;
+      margin: 30px auto;
+      border: 1px solid var(--line-soft);
+      border-radius: 9px;
+      background: #fbfcfd;
+      box-shadow: 0 8px 28px rgb(16 38 54 / 10%);
+    }
+    .preview del { color: #6b7280; }
+    .empty, .deleted-notice, .error-notice { max-width: 620px; margin: 15vh auto 0; padding: 28px; border: 1px solid var(--line); border-radius: 10px; background: #fbfcfd; text-align: center; color: var(--muted); }
+    .empty h2, .deleted-notice h2, .error-notice h2 { margin: 0 0 8px; color: var(--ink); font-size: 19px; }
+    .deleted-notice { color: #912018; background: var(--red-soft); border-color: #fecdca; }
+    .deleted-notice h2 { color: var(--red); }
+    .notice-path { font-family: ui-monospace, monospace; overflow-wrap: anywhere; }
+    @media (max-width: 760px) {
+      :root { --sidebar-width: 210px; }
+      .preview { padding: 28px 22px 88px; }
+      .root { display: none; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <header class="brand">
+        <div class="brand-line"><div class="logo">MD</div><h1>mdview-web</h1></div>
+        <div class="root" id="rootPath" title=""></div>
+      </header>
+      <div class="tree-tools"><input class="filter" id="filter" type="search" placeholder="Filter Markdown files" aria-label="Filter Markdown files"></div>
+      <nav class="tree" id="tree" aria-label="Markdown file tree"></nav>
+    </aside>
+    <main class="main">
+      <header class="chrome">
+        <div class="tabs" id="tabs" role="tablist" aria-label="Open Markdown files"></div>
+        <div class="statusbar">
+          <span class="current-path" id="currentPath">No file selected</span>
+          <span class="connection" id="connection">connecting</span>
+        </div>
+      </header>
+      <div class="viewport" id="viewport" tabindex="0" aria-label="Markdown preview"><article class="preview" id="preview" aria-live="polite"></article></div>
+    </main>
+  </div>
+  <script>
+    "use strict";
+    const CONFIG = { initial: __MDVIEW_INITIAL__, root: __MDVIEW_ROOT__ };
+    const treeElement = document.getElementById("tree");
+    const tabsElement = document.getElementById("tabs");
+    const previewElement = document.getElementById("preview");
+    const viewportElement = document.getElementById("viewport");
+    const pathElement = document.getElementById("currentPath");
+    const connectionElement = document.getElementById("connection");
+    const filterElement = document.getElementById("filter");
+    const rootElement = document.getElementById("rootPath");
+    const tabs = new Map();
+    let selected = null;
+    let files = [];
+    let refreshTimer = null;
+    let treeSignature = null;
+    let tabsSignature = null;
+    let committedPreviewKey = null;
+    let pendingPreviewKey = null;
+    let previewGeneration = 0;
+
+    rootElement.textContent = CONFIG.root;
+    rootElement.title = CONFIG.root;
+
+    function basename(path) {
+      const parts = path.split("/");
+      return parts[parts.length - 1] || path;
+    }
+
+    function newTab() {
+      return {
+        loading: true,
+        html: "",
+        deleted: false,
+        error: null,
+        refreshError: null,
+        fingerprint: null,
+        changed: false,
+        revision: 0,
+        request: 0
+      };
+    }
+
+    function persistTabs() {
+      try {
+        sessionStorage.setItem("mdview-web.tabs", JSON.stringify([...tabs.keys()]));
+        sessionStorage.setItem("mdview-web.selected", selected || "");
+      } catch (_) {}
+    }
+
+    function restoredTabs() {
+      try {
+        const stored = JSON.parse(sessionStorage.getItem("mdview-web.tabs") || "[]");
+        return Array.isArray(stored) ? stored.filter(path => typeof path === "string") : [];
+      } catch (_) {
+        return [];
+      }
+    }
+
+    function createTree(filesToRender) {
+      const root = { directories: new Map(), files: [] };
+      for (const path of filesToRender) {
+        const parts = path.split("/");
+        const file = parts.pop();
+        let node = root;
+        for (const directory of parts) {
+          if (!node.directories.has(directory)) {
+            node.directories.set(directory, { directories: new Map(), files: [] });
+          }
+          node = node.directories.get(directory);
+        }
+        node.files.push({ name: file, path });
+      }
+      return root;
+    }
+
+    function renderTreeNode(node, parent, prefix, openDirectories, preserveOpenState) {
+      for (const [name, child] of [...node.directories].sort((a, b) => a[0].localeCompare(b[0]))) {
+        const directoryPath = prefix ? `${prefix}/${name}` : name;
+        const details = document.createElement("details");
+        details.dataset.path = directoryPath;
+        details.open = preserveOpenState ? openDirectories.has(directoryPath) : true;
+        const summary = document.createElement("summary");
+        summary.textContent = name;
+        const children = document.createElement("div");
+        children.className = "tree-children";
+        renderTreeNode(child, children, directoryPath, openDirectories, preserveOpenState);
+        details.append(summary, children);
+        parent.append(details);
+      }
+      for (const file of node.files.sort((a, b) => a.name.localeCompare(b.name))) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "tree-file" + (file.path === selected ? " active" : "");
+        button.textContent = file.name;
+        button.title = file.path;
+        button.dataset.path = file.path;
+        button.addEventListener("click", () => openFile(file.path));
+        parent.append(button);
+      }
+    }
+
+    function updateTreeSelection() {
+      for (const button of treeElement.querySelectorAll(".tree-file")) {
+        button.classList.toggle("active", button.dataset.path === selected);
+      }
+    }
+
+    function renderTree() {
+      const query = filterElement.value.trim().toLocaleLowerCase();
+      const visible = query ? files.filter(path => path.toLocaleLowerCase().includes(query)) : files;
+      const nextSignature = `${query}\u0000${files.join("\u0000")}`;
+      if (treeSignature === nextSignature) {
+        updateTreeSelection();
+        return;
+      }
+      const existingDirectories = [...treeElement.querySelectorAll("details[data-path]")];
+      const openDirectories = new Set(
+        existingDirectories.filter(details => details.open).map(details => details.dataset.path)
+      );
+      const preserveOpenState = existingDirectories.length > 0;
+      const fragment = document.createDocumentFragment();
+      if (!visible.length) {
+        const empty = document.createElement("div");
+        empty.className = "tree-empty";
+        empty.textContent = query ? "No matching Markdown files." : "No Markdown files in this workspace.";
+        fragment.append(empty);
+        treeElement.replaceChildren(fragment);
+        treeSignature = nextSignature;
+        return;
+      }
+      renderTreeNode(createTree(visible), fragment, "", openDirectories, preserveOpenState);
+      treeElement.replaceChildren(fragment);
+      treeSignature = nextSignature;
+    }
+
+    function renderTabs() {
+      const nextSignature = `${selected || ""}\u0000${[...tabs].map(([path, tab]) => `${path}:${tab.deleted}:${tab.changed}`).join("\u0000")}`;
+      if (tabsSignature === nextSignature) return;
+      const fragment = document.createDocumentFragment();
+      for (const [path, tab] of tabs) {
+        const wrapper = document.createElement("div");
+        wrapper.className = "tab" + (path === selected ? " active" : "") + (tab.changed ? " changed" : "") + (tab.deleted ? " deleted" : "");
+        wrapper.setAttribute("role", "tab");
+        wrapper.setAttribute("aria-selected", path === selected ? "true" : "false");
+        const choose = document.createElement("button");
+        choose.type = "button";
+        choose.className = "tab-select";
+        choose.textContent = basename(path);
+        choose.title = tab.changed ? `${path} — changed since last view` : path;
+        choose.setAttribute("aria-label", choose.title);
+        choose.addEventListener("click", () => selectFile(path));
+        const close = document.createElement("button");
+        close.type = "button";
+        close.className = "tab-close";
+        close.textContent = "×";
+        close.title = `Close ${path}`;
+        close.setAttribute("aria-label", `Close ${path}`);
+        close.addEventListener("click", event => { event.stopPropagation(); closeFile(path); });
+        wrapper.append(choose, close);
+        fragment.append(wrapper);
+      }
+      tabsElement.replaceChildren(fragment);
+      tabsSignature = nextSignature;
+    }
+
+    function previewKey(path, tab) {
+      if (!path || !tab) return "empty";
+      if (tab.loading) return `loading:${path}`;
+      if (tab.deleted) return `deleted:${path}`;
+      if (tab.error) return `error:${path}:${tab.error}`;
+      return `html:${path}:${tab.revision}`;
+    }
+
+    function notice(className, headingText, detailText, filePath = null) {
+      const container = document.createElement("div");
+      container.className = className;
+      const heading = document.createElement("h2");
+      heading.textContent = headingText;
+      container.append(heading);
+      if (detailText) {
+        const detail = document.createElement("p");
+        detail.textContent = detailText;
+        container.append(detail);
+      }
+      if (filePath) {
+        const file = document.createElement("p");
+        file.className = "notice-path";
+        file.textContent = filePath;
+        container.append(file);
+      }
+      return container;
+    }
+
+    function commitNotice(key, node) {
+      if (committedPreviewKey === key) return;
+      previewGeneration += 1;
+      pendingPreviewKey = null;
+      previewElement.removeAttribute("aria-busy");
+      previewElement.replaceChildren(node);
+      committedPreviewKey = key;
+    }
+
+    function enhanceMarkdown(container) {
+      for (const table of [...container.querySelectorAll("table")]) {
+        if (table.parentElement?.classList.contains("table-scroll")) continue;
+        const wrapper = document.createElement("div");
+        wrapper.className = "table-scroll";
+        wrapper.setAttribute("role", "region");
+        wrapper.setAttribute("aria-label", "Scrollable table");
+        wrapper.tabIndex = 0;
+        table.before(wrapper);
+        wrapper.append(table);
+      }
+      for (const block of container.querySelectorAll("pre")) {
+        const code = block.querySelector("code");
+        const languageClass = code
+          ? [...code.classList].find(name => name.startsWith("language-") && name.length > 9)
+          : null;
+        if (languageClass) {
+          block.classList.add("has-language");
+          block.dataset.language = languageClass.slice(9);
+        }
+      }
+      for (const image of container.querySelectorAll("img")) {
+        image.decoding = "async";
+      }
+    }
+
+    function imageReady(image) {
+      if (typeof image.decode === "function") return image.decode().catch(() => {});
+      if (image.complete) return Promise.resolve();
+      return new Promise(resolve => {
+        image.addEventListener("load", resolve, { once: true });
+        image.addEventListener("error", resolve, { once: true });
+      });
+    }
+
+    async function waitForImages(container) {
+      const images = [...container.querySelectorAll("img")];
+      if (!images.length) return;
+      await Promise.race([
+        Promise.all(images.map(imageReady)),
+        new Promise(resolve => window.setTimeout(resolve, 300))
+      ]);
+    }
+
+    async function prepareMarkdownPreview(path, tab, key) {
+      if (committedPreviewKey === key) {
+        cancelPendingPreview();
+        return;
+      }
+      if (pendingPreviewKey === key) return;
+      const generation = ++previewGeneration;
+      pendingPreviewKey = key;
+      previewElement.setAttribute("aria-busy", "true");
+      const staging = document.createElement("div");
+      staging.innerHTML = tab.html;
+      enhanceMarkdown(staging);
+
+      const replacingSameDocument = committedPreviewKey?.startsWith(`html:${path}:`);
+      if (replacingSameDocument) await waitForImages(staging);
+      await new Promise(resolve => window.requestAnimationFrame(resolve));
+
+      if (
+        generation !== previewGeneration ||
+        pendingPreviewKey !== key ||
+        selected !== path ||
+        tabs.get(path) !== tab ||
+        previewKey(path, tab) !== key
+      ) {
+        if (generation === previewGeneration && pendingPreviewKey === key) {
+          pendingPreviewKey = null;
+          previewElement.removeAttribute("aria-busy");
+        }
+        return;
+      }
+
+      const scrollTop = viewportElement.scrollTop;
+      previewElement.replaceChildren(...staging.childNodes);
+      committedPreviewKey = key;
+      pendingPreviewKey = null;
+      previewElement.removeAttribute("aria-busy");
+      const maxScroll = Math.max(0, viewportElement.scrollHeight - viewportElement.clientHeight);
+      viewportElement.scrollTop = Math.min(scrollTop, maxScroll);
+    }
+
+    function cancelPendingPreview() {
+      if (pendingPreviewKey === null) return;
+      previewGeneration += 1;
+      pendingPreviewKey = null;
+      previewElement.removeAttribute("aria-busy");
+    }
+
+    function syncPreview() {
+      if (!selected || !tabs.has(selected)) {
+        commitNotice(
+          "empty",
+          notice("empty", "Select a Markdown file", "Open a file from the tree to start a live preview.")
+        );
+        return;
+      }
+      const path = selected;
+      const tab = tabs.get(path);
+      const key = previewKey(path, tab);
+      if (tab.loading) {
+        commitNotice(key, notice("empty", "Loading preview…", null));
+      } else if (tab.deleted) {
+        commitNotice(
+          key,
+          notice(
+            "deleted-notice",
+            "File deleted",
+            "This tab will recover automatically if the file is recreated.",
+            path
+          )
+        );
+      } else if (tab.error) {
+        commitNotice(key, notice("error-notice", "Preview unavailable", tab.error));
+      } else {
+        void prepareMarkdownPreview(path, tab, key);
+      }
+    }
+
+    function renderSelected() {
+      const activeTab = selected ? tabs.get(selected) : null;
+      if (activeTab?.changed) activeTab.changed = false;
+      renderTabs();
+      renderTree();
+      if (!selected || !tabs.has(selected)) {
+        pathElement.textContent = "No file selected";
+        pathElement.title = "";
+      } else {
+        pathElement.textContent = selected;
+        pathElement.title = selected;
+      }
+      syncPreview();
+    }
+
+    function selectFile(path) {
+      if (!tabs.has(path)) return;
+      selected = path;
+      renderSelected();
+      persistTabs();
+    }
+
+    async function openFile(path, resetScroll = true) {
+      if (!tabs.has(path)) tabs.set(path, newTab());
+      selected = path;
+      if (resetScroll) viewportElement.scrollTop = 0;
+      renderSelected();
+      persistTabs();
+      await refreshFile(path);
+    }
+
+    function closeFile(path) {
+      const paths = [...tabs.keys()];
+      const index = paths.indexOf(path);
+      tabs.delete(path);
+      if (selected === path) {
+        selected = paths[index + 1] || paths[index - 1] || null;
+      }
+      renderSelected();
+      persistTabs();
+    }
+
+    async function refreshFile(path) {
+      const tab = tabs.get(path);
+      if (!tab) return true;
+      const request = ++tab.request;
+      const wasLoading = tab.loading;
+      try {
+        const response = await fetch(`/api/file?path=${encodeURIComponent(path)}`, { cache: "no-store" });
+        const payload = await response.json();
+        if (tabs.get(path) !== tab || tab.request !== request) return true;
+        if (response.status === 410 || payload.deleted) {
+          const stateChanged = !tab.deleted || tab.loading || tab.error !== null;
+          const sourceChanged = !wasLoading && (!tab.deleted || tab.fingerprint !== null);
+          Object.assign(tab, {
+            loading: false,
+            deleted: true,
+            error: null,
+            refreshError: null,
+            fingerprint: null,
+            html: ""
+          });
+          if (sourceChanged && selected !== path) tab.changed = true;
+          if (stateChanged) tab.revision += 1;
+        } else if (!response.ok) {
+          throw new Error(payload.error || `HTTP ${response.status}`);
+        } else {
+          const fingerprint = typeof payload.fingerprint === "string" ? payload.fingerprint : null;
+          const stateChanged =
+            tab.loading || tab.deleted || tab.error !== null || tab.html !== payload.html;
+          const sourceChanged =
+            !wasLoading && (tab.deleted || (tab.fingerprint !== null && tab.fingerprint !== fingerprint));
+          Object.assign(tab, {
+            loading: false,
+            deleted: false,
+            error: null,
+            refreshError: null,
+            fingerprint,
+            html: payload.html
+          });
+          if (sourceChanged && selected !== path) tab.changed = true;
+          if (stateChanged) tab.revision += 1;
+        }
+      } catch (error) {
+        if (tabs.get(path) !== tab || tab.request !== request) return true;
+        const message = error instanceof Error ? error.message : String(error);
+        if (tab.html && !tab.deleted) {
+          tab.loading = false;
+          tab.refreshError = message;
+          return false;
+        }
+        const changed = tab.loading || tab.error !== message;
+        Object.assign(tab, { loading: false, error: message, refreshError: null });
+        if (changed) tab.revision += 1;
+      }
+      if (selected === path) renderSelected(); else renderTabs();
+      persistTabs();
+      return true;
+    }
+
+    async function refreshTree() {
+      try {
+        const response = await fetch("/api/tree", { cache: "no-store" });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const payload = await response.json();
+        const changed =
+          files.length !== payload.files.length || files.some((path, index) => path !== payload.files[index]);
+        if (changed) {
+          files = payload.files;
+          renderTree();
+        }
+        return true;
+      } catch (error) {
+        if (!files.length) {
+          const empty = document.createElement("div");
+          empty.className = "tree-empty";
+          empty.textContent = "Unable to refresh the file tree.";
+          treeElement.replaceChildren(empty);
+          treeSignature = null;
+        }
+        return false;
+      }
+    }
+
+    async function refreshWorkspace() {
+      const results = await Promise.all([refreshTree(), ...[...tabs.keys()].map(refreshFile)]);
+      const succeeded = results.every(Boolean);
+      connectionElement.textContent = succeeded ? "updated" : "update failed";
+      window.setTimeout(() => {
+        if (connectionElement.classList.contains("connected")) {
+          connectionElement.textContent = succeeded ? "live" : "retrying";
+        }
+      }, 900);
+    }
+
+    function scheduleRefresh() {
+      window.clearTimeout(refreshTimer);
+      connectionElement.textContent = "updating";
+      refreshTimer = window.setTimeout(refreshWorkspace, 120);
+    }
+
+    previewElement.addEventListener("click", event => {
+      const link = event.target.closest("a");
+      if (!link) return;
+      const url = new URL(link.href, location.href);
+      if (url.origin === location.origin && url.pathname === "/open") {
+        const path = url.searchParams.get("path");
+        if (path) {
+          event.preventDefault();
+          openFile(path);
+        }
+      }
+    });
+
+    filterElement.addEventListener("input", renderTree);
+
+    const events = new EventSource("/events");
+    events.addEventListener("ready", () => {
+      connectionElement.className = "connection connected";
+      connectionElement.textContent = "live";
+      scheduleRefresh();
+    });
+    events.addEventListener("change", scheduleRefresh);
+    events.onerror = () => {
+      connectionElement.className = "connection disconnected";
+      connectionElement.textContent = "reconnecting";
+    };
+
+    async function start() {
+      await refreshTree();
+      const restored = restoredTabs();
+      const requested = new URLSearchParams(location.search).get("path");
+      const initial = requested || CONFIG.initial;
+      for (const path of restored) tabs.set(path, newTab());
+      if (initial && !tabs.has(initial)) tabs.set(initial, newTab());
+      try {
+        const storedSelected = sessionStorage.getItem("mdview-web.selected");
+        selected = initial || (storedSelected && tabs.has(storedSelected) ? storedSelected : tabs.keys().next().value || null);
+      } catch (_) {
+        selected = initial || tabs.keys().next().value || null;
+      }
+      renderSelected();
+      await Promise.all([...tabs.keys()].map(refreshFile));
+      persistTabs();
+    }
+
+    start();
+  </script>
+</body>
+</html>

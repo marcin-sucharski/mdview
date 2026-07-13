@@ -9,5 +9,7 @@ pub mod selection;
 pub mod syntax;
 pub mod terminal;
 pub mod watcher;
+pub mod web;
+pub mod width;
 
 pub use app::run;

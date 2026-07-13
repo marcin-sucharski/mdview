@@ -1,6 +1,8 @@
 # mdview
 
-`mdview` is a small Rust terminal UI for previewing Markdown on Linux.
+`mdview` is a small Rust terminal UI for previewing Markdown on Linux. The
+package also includes `mdview-web`, a local HTTP server with a live Markdown
+workspace UI.
 
 It renders strict CommonMark in the alternate screen, supports keyboard and
 optional mouse scrolling, shows local images in iTerm2-compatible terminals, and reloads
@@ -19,12 +21,28 @@ automatically when the viewed file changes.
 - Highlighted fenced code blocks for JSON, HTTP, SQL/PostgreSQL, XML, and plain text
 - iTerm2 inline images through tmux/SSH where supported
 - Nix flake packages and development shells for x86_64-linux and aarch64-linux
+- Browser preview with a recursive file tree, recently opened tabs, and local images
+- Live browser updates for Markdown changes, atomic saves, tree changes, deletions, and recreation
 
 ## Usage
 
 ```sh
 nix run . -- examples/basic.md
 ```
+
+For a browser workspace, serve a directory or an initial Markdown file:
+
+```sh
+nix run .#mdview-web -- examples
+nix run .#mdview-web -- --port 8080 examples/basic.md
+```
+
+`mdview-web` listens on `127.0.0.1:7312` by default. Use `--listen <ADDRESS>`
+to choose another listen address, or `-I`/`--all-interfaces` to listen on all
+IPv4 interfaces.
+Run `mdview-web --help` for the complete command reference. The browser keeps
+opened files as tabs, refreshes previews and the file tree automatically, and
+marks deleted open files until they reappear.
 
 Inside the viewer:
 
@@ -68,5 +86,6 @@ cargo fmt --check
 cargo clippy -- -D warnings
 cargo test
 scripts/integration-tmux.sh
+scripts/integration-web.sh
 nix flake check
 ```

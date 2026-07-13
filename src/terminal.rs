@@ -4,6 +4,7 @@ use crate::image::{
 };
 use crate::rendered::{ImageSlot, LineContent, RenderLine, Segment, Style};
 use crate::selection::SelectionRange;
+use crate::width::{str_width, width_chars};
 use crossterm::cursor::{Hide, MoveTo, Show};
 use crossterm::terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{execute, queue};
@@ -13,7 +14,6 @@ use std::fs;
 use std::io::{self, Stdout, Write};
 use std::path::PathBuf;
 use std::time::SystemTime;
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 const ENABLE_WHEEL_MOUSE: &str = "\x1b[?1000h\x1b[?1006h";
 const ENABLE_FULL_MOUSE: &str = "\x1b[?1000h\x1b[?1002h\x1b[?1006h";
@@ -349,7 +349,7 @@ impl Terminal {
 
     fn draw_status(&mut self, status: &str, cols: u16, y: u16) -> io::Result<()> {
         let mut text = fit_to_width(status, cols as usize);
-        let width = UnicodeWidthStr::width(text.as_str());
+        let width = str_width(text.as_str());
         if width < cols as usize {
             text.push_str(&" ".repeat(cols as usize - width));
         }
@@ -439,8 +439,7 @@ fn write_segments_with_highlights(
 
         let text = visible_safe(&segment.text);
         let mut last_selected = false;
-        for ch in text.chars() {
-            let char_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        for (ch, char_width) in width_chars(&text) {
             if char_width > 0 && col + char_width > max_width {
                 break 'segments;
             }
@@ -516,8 +515,7 @@ fn segments_visible_width(segments: &[Segment], max_width: usize) -> usize {
         if width >= max_width {
             break;
         }
-        for ch in visible_safe(&segment.text).chars() {
-            let char_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+        for (_, char_width) in width_chars(&visible_safe(&segment.text)) {
             if char_width > 0 && width + char_width > max_width {
                 break 'segments;
             }
@@ -584,8 +582,7 @@ pub fn osc8_end() -> &'static str {
 pub fn fit_to_width(text: &str, max_width: usize) -> String {
     let mut out = String::new();
     let mut width = 0usize;
-    for ch in text.chars() {
-        let char_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+    for (ch, char_width) in width_chars(text) {
         if width + char_width > max_width {
             break;
         }
