@@ -80,6 +80,9 @@ tmux when detection is wrong.
 
 ## Development
 
+Rust 1.91 or newer is required. The Nix development shell provides a compatible
+toolchain and the integration test tools.
+
 ```sh
 nix develop
 cargo fmt --check

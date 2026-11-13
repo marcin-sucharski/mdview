@@ -8,6 +8,7 @@
   outputs = { self, nixpkgs }:
     let
       lib = nixpkgs.lib;
+      manifest = builtins.fromTOML (builtins.readFile ./Cargo.toml);
       systems = [
         "x86_64-linux"
         "aarch64-linux"
@@ -21,7 +22,7 @@
           pkgs = pkgsFor system;
           package = pkgs.rustPlatform.buildRustPackage {
             pname = "mdview";
-            version = "0.1.13";
+            version = manifest.package.version;
             src = pkgs.lib.cleanSourceWith {
               src = ./.;
               filter = path: type:
